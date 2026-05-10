@@ -292,12 +292,18 @@ int main(void)
 		}
 
 		if (usb->mouse != NULL) {
-			//; //delay interrupt
+			/* HID decoder assigns (not accumulates) x,y per report, so the
+			 * delta must be consumed exactly once -- otherwise the main loop
+			 * re-applies the same value thousands of times between reports. */
+			int16_t mx = usb->mouse->x;
+			int16_t my = usb->mouse->y;
+			usb->mouse->x = 0;
+			usb->mouse->y = 0;
 
 			joy0datHDelta = 0;
-			joy0datH = joy0datH + ((usb->mouse->y) / sensitivityMouse);
+			joy0datH = joy0datH + (my / sensitivityMouse);
 			joy0datLDelta = 0;
-			joy0datL = joy0datL + ((usb->mouse->x) / sensitivityMouse);
+			joy0datL = joy0datL + (mx / sensitivityMouse);
 
 			if (usb->mouse->buttons[1] == 1) {
 				POTGORH &= ~(1UL << 2);
