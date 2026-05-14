@@ -423,21 +423,22 @@ int main(void)
 				CIAAPRA |= 1UL << 7;
 			}
 
-			gamepad1_buttons.buttons_data = 1; // Gamepad id
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_PLAY]);
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_RW]);
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_FF]);
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_GREEN]);
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_YELLOW]);
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_RED]);
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_BLUE]);
+			/* Build the CD32 serial-button word in a local first.  The
+			 * EXTI handler at $DFF016 reads gamepad1_buttons.buttons_data
+			 * directly to feed POTGOR bit 6 when CD32 mode is active, so
+			 * publishing intermediate shift states (1, 3, 7, ...) here
+			 * lets an Amiga read at index N catch a moment where bit N is
+			 * still 0 -- showing the button as pressed even when no real
+			 * input is happening.  Compute once, store once. */
+			uint16_t bd1 = 1; // Gamepad id
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_PLAY]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_RW]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_FF]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_GREEN]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_YELLOW]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_RED]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_BLUE]);
+			gamepad1_buttons.buttons_data = bd1;
 			//__enable_irq();
 
 		}
@@ -515,21 +516,16 @@ int main(void)
 			} else {
 				CIAAPRA |= 1UL << 6;
 			}
-			gamepad2_buttons.buttons_data = 1; // Gamepad id
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_PLAY]);
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_RW]);
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_FF]);
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_GREEN]);
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_YELLOW]);
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_RED]);
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_BLUE]);
+			/* Atomic publish, as for gamepad1 above. */
+			uint16_t bd2 = 1; // Gamepad id
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_PLAY]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_RW]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_FF]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_GREEN]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_YELLOW]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_RED]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_BLUE]);
+			gamepad2_buttons.buttons_data = bd2;
 
 			//__enable_irq();
 		}
