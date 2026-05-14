@@ -890,6 +890,33 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 				else if (address == 0x16) {
 					WriteData(0xA5);
 				}
+				/* Live USB-host diagnostic snapshot:
+				 * $1C = HS host gState | (is_connected << 7)
+				 * $1D = FS host gState | (is_connected << 7)
+				 * gState values: 0=IDLE 1=WAIT_ATTACH 2=ATTACHED 3=DISCONN
+				 * 4=DETECT_SPEED 5=ENUMERATION 6=CLASS_REQ 7=INPUT
+				 * 8=SET_CONFIG 9=SET_WAKEUP 10=CHECK_CLASS 11=CLASS 12=SUSPEND
+				 * 13=ABORT */
+				else if (address == 0x1C) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					WriteData((uint8_t)(hUsbHostHS.gState & 0x7F)
+						| ((hUsbHostHS.device.is_connected & 1) << 7));
+				} else if (address == 0x1D) {
+					extern USBH_HandleTypeDef hUsbHostFS;
+					WriteData((uint8_t)(hUsbHostFS.gState & 0x7F)
+						| ((hUsbHostFS.device.is_connected & 1) << 7));
+				}
+				/* EnumState (current USB enumeration sub-step) for diagnosing
+				 * where enumeration hangs.
+				 * 0=IDLE 1=GET_FULL_DEV_DESC 2=SET_ADDR 3=GET_CFG_DESC
+				 * 4=GET_FULL_CFG_DESC 5=GET_MFC_STR 6=GET_PROD_STR 7=GET_SN_STR */
+				else if (address == 0x05) {
+					extern USBH_HandleTypeDef hUsbHostFS;
+					WriteData((uint8_t)hUsbHostFS.EnumState);
+				} else if (address == 0x07) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					WriteData((uint8_t)hUsbHostHS.EnumState);
+				}
 				/* Raw HID report window: $18..$1F = raw_report[offset+0..7].
 				 * `offset` is set by writing $17 (must be a multiple of 8 in
 				 * range 0..24).  Reading $17 returns the actual HID report

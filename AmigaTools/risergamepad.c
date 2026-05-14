@@ -189,16 +189,50 @@ static const char *port_name(unsigned char t)
     }
 }
 
+static const char *gstate_name(unsigned char s)
+{
+    switch (s & 0x7F) {
+    case 0:  return "IDLE";
+    case 1:  return "WAIT_ATTACH";
+    case 2:  return "ATTACHED";
+    case 3:  return "DISCONNECTED";
+    case 4:  return "DETECT_SPEED";
+    case 5:  return "ENUMERATION";
+    case 6:  return "CLASS_REQUEST";
+    case 7:  return "INPUT";
+    case 8:  return "SET_CONFIG";
+    case 9:  return "SET_WAKEUP";
+    case 10: return "CHECK_CLASS";
+    case 11: return "CLASS";
+    case 12: return "SUSPENDED";
+    case 13: return "ABORT";
+    default: return "?";
+    }
+}
+
 static void show_ports(void)
 {
     unsigned char p1 = riser[PAD1_PORT_TYPE];
     unsigned char p2 = riser[PAD2_PORT_TYPE];
     unsigned char sentinel = riser[SENTINEL_REG];
+    unsigned char hs = riser[0x1C];
+    unsigned char fs = riser[0x1D];
     printf("USB ports:\n");
     printf("  Pad 1 port (HS): %s   [$14=%02X]\n", port_name(p1), p1);
     printf("  Pad 2 port (FS): %s   [$15=%02X]\n", port_name(p2), p2);
-    printf("  bus-read sentinel: $16=%02X (expect A5 if firmware up-to-date)\n",
-           sentinel);
+    printf("  bus-read sentinel: $16=%02X (expect A5)\n", sentinel);
+    unsigned char hs_enum = riser[0x07];
+    unsigned char fs_enum = riser[0x05];
+    static const char *enames[] = {
+        "IDLE","GET_FULL_DEV_DESC","SET_ADDR","GET_CFG_DESC",
+        "GET_FULL_CFG_DESC","GET_MFC_STR","GET_PROD_STR","GET_SN_STR"
+    };
+    const char *hsen = (hs_enum < 8) ? enames[hs_enum] : "?";
+    const char *fsen = (fs_enum < 8) ? enames[fs_enum] : "?";
+    printf("  HS host: gState=%-12s  conn=%d  EnumState=%s\n",
+           gstate_name(hs), (hs & 0x80) ? 1 : 0, hsen);
+    printf("  FS host: gState=%-12s  conn=%d  EnumState=%s\n",
+           gstate_name(fs), (fs & 0x80) ? 1 : 0, fsen);
 }
 
 static void show(int pad)
