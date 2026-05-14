@@ -220,7 +220,30 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  	    }
 	  	    else
 	  	    {
-	  		  //TODO Check if device is XBOX360 game controller as it doesn't do HID Descriptors aparently
+	  		  /* VID:PID quirks for devices that don't (or won't) return a
+	  		   * HID descriptor on request -- e.g. XBOX360 controllers,
+	  		   * various PSX-to-USB adapters, cheap third-party pads.
+	  		   * Set up minimal handle state from the endpoint descriptor
+	  		   * (which IS readable) and force JOYSTICK classification so
+	  		   * the gamepad init path runs and reports start flowing. */
+	  		  uint16_t vid = phost->device.DevDesc.idVendor;
+	  		  uint16_t pid = phost->device.DevDesc.idProduct;
+	  		  if ((vid == 0x6666 && pid == 0x0667)) {
+	  			  /* WiseGroup SmartJoy PSX -> USB adapter */
+	  			  HID_Handle = phost->pActiveClass->pData[phost->pActiveClass->iface_initnum];
+	  			  HID_Handle->state     = HID_INIT;
+	  			  HID_Handle->ctl_state = HID_REQ_INIT;
+	  			  HID_Handle->ep_addr   = phost->device.CfgDesc.Itf_Desc[phost->device.current_interface].Ep_Desc[0].bEndpointAddress;
+	  			  HID_Handle->length    = phost->device.CfgDesc.Itf_Desc[phost->device.current_interface].Ep_Desc[0].wMaxPacketSize;
+	  			  HID_Handle->poll      = phost->device.CfgDesc.Itf_Desc[phost->device.current_interface].Ep_Desc[0].bInterval;
+	  			  HID_Handle->HID_Desc.RptDesc.type = REPORT_TYPE_JOYSTICK;
+	  			  /* Skip the report-descriptor read since the device won't
+	  			   * answer it.  Jump straight to subclass init -- the report
+	  			   * descriptor's normal output (axis offsets / button map)
+	  			   * isn't usable for this device anyway; the Amiga-side tool
+	  			   * uses raw_report bytes for mapping. */
+	  			  phost->pActiveClass->iface_init = IFACE_INITSUBCLASS;
+	  		  }
 	  	    }
 
 
@@ -251,6 +274,22 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 
 		  		Itf_Desc = &phost->device.CfgDesc.Itf_Desc[phost->pActiveClass->iface_initnum];
 
+		  		/* VID:PID quirks list.  Some USB-to-PSX/legacy-gamepad
+		  		 * adapters use HID descriptors the parser doesn't classify
+		  		 * (RptDesc.type stays at 0), so neither keyboard nor mouse
+		  		 * nor joystick init runs and the device appears empty to
+		  		 * the application.  Force those known devices to JOYSTICK
+		  		 * so the gamepad init path activates and reports start
+		  		 * flowing.  The Amiga-side mapping tool can then watch
+		  		 * raw_report bytes to figure out the button layout. */
+		  		{
+		  			uint16_t vid = phost->device.DevDesc.idVendor;
+		  			uint16_t pid = phost->device.DevDesc.idProduct;
+		  			if ((vid == 0x6666 && pid == 0x0667)) {
+		  				/* WiseGroup SmartJoy PSX -> USB adapter */
+		  				HID_Handle->HID_Desc.RptDesc.type = REPORT_TYPE_JOYSTICK;
+		  			}
+		  		}
 
 		  		if((Itf_Desc->bInterfaceClass == 0x03 && Itf_Desc->bInterfaceSubClass == 0x01 && Itf_Desc->bInterfaceProtocol == HID_KEYBRD_BOOT_CODE) \
 		  			|| (	HID_Handle->HID_Desc.RptDesc.type == REPORT_TYPE_KEYBOARD  )	)

@@ -673,9 +673,17 @@ USBH_StatusTypeDef  USBH_Process(USBH_HandleTypeDef *phost)
       {
         phost->pActiveClass = NULL;
 
+        /* VID:PID quirks for legacy/cheap gamepad adapters that don't
+         * advertise themselves as InterfaceClass=HID.  Force HID
+         * (ClassCode 0x03) so our HID host code claims the device. */
+        uint16_t qvid = phost->device.DevDesc.idVendor;
+        uint16_t qpid = phost->device.DevDesc.idProduct;
+        int quirk_force_hid = (qvid == 0x6666 && qpid == 0x0667);
+
         for (idx = 0U; idx < USBH_MAX_NUM_SUPPORTED_CLASS; idx++)
         {
-          if (phost->pClass[idx]->ClassCode == phost->device.CfgDesc.Itf_Desc[0].bInterfaceClass)
+          if (phost->pClass[idx]->ClassCode == phost->device.CfgDesc.Itf_Desc[0].bInterfaceClass
+              || (quirk_force_hid && phost->pClass[idx]->ClassCode == 0x03U))
           {
             phost->pActiveClass = phost->pClass[idx];
             break;

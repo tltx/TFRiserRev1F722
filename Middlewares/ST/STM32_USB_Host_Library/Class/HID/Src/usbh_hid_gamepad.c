@@ -316,14 +316,44 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 
 				gamepad_info.gamepad_data = jmap;
 				gamepad_info.gamepad_extraBtn = btn_extra;
-
-		  return USBH_OK;
 	    }
 
+	  /* Per-device translators for gamepads whose HID descriptor the parser
+	   * can't interpret (or that don't even serve a descriptor).  Each one
+	   * reads the raw report bytes captured above and overwrites
+	   * gamepad_data / gamepad_extraBtn with the standard layout the rest
+	   * of the firmware expects:
+	   *   gamepad_data bits 0..3 = D-pad (R, L, D, U)
+	   *   gamepad_data bits 4..7 = USB buttons 0..3 (b0..b3)
+	   *   gamepad_extraBtn       = USB buttons 4..11 (b4..b11)              */
+	  {
+	    uint16_t vid = phost->device.DevDesc.idVendor;
+	    uint16_t pid = phost->device.DevDesc.idProduct;
 
+	    if (vid == 0x6666 && pid == 0x0667
+	        && gamepad_info.raw_report_len >= 3) {
+	      /* WiseGroup SmartJoy PSX -> USB.  3-byte report:
+	       *   byte 0 = buttons: X=b0 A=b1 B=b2 Y=b3 Sel=b4 Start=b5 L=b6 R=b7
+	       *   byte 1 = X axis  (0x00 = left, 0x80 = center, 0xFF = right)
+	       *   byte 2 = Y axis  (0x00 = up,   0x80 = center, 0xFF = down)  */
+	      uint8_t btns = gamepad_info.raw_report[0];
+	      uint8_t xax  = gamepad_info.raw_report[1];
+	      uint8_t yax  = gamepad_info.raw_report[2];
 
-	  return USBH_FAIL;
+	      uint8_t d = 0;
+	      if (xax < 0x40U) d |= JOY_LEFT;
+	      if (xax > 0xC0U) d |= JOY_RIGHT;
+	      if (yax < 0x40U) d |= JOY_UP;
+	      if (yax > 0xC0U) d |= JOY_DOWN;
+	      /* Move PSX X/A/B/Y into the data byte's "USB buttons 0..3" slot */
+	      d |= (btns & 0x0FU) << JOY_BTN_SHIFT;
+	      /* Sel / Start / L / R go into extraBtn bits 0..3                */
+	      gamepad_info.gamepad_data = d;
+	      gamepad_info.gamepad_extraBtn = (btns >> 4) & 0x0FU;
+	    }
+	  }
 
+	  return USBH_OK;
 }
 
 /**
