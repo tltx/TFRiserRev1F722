@@ -228,8 +228,11 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  		   * the gamepad init path runs and reports start flowing. */
 	  		  uint16_t vid = phost->device.DevDesc.idVendor;
 	  		  uint16_t pid = phost->device.DevDesc.idProduct;
-	  		  if ((vid == 0x6666 && pid == 0x0667)) {
-	  			  /* WiseGroup SmartJoy PSX -> USB adapter */
+	  		  if ((vid == 0x6666 && pid == 0x0667)
+	  		      || (vid == 0x289B && pid == 0x0080)) {
+	  			  /* WiseGroup SmartJoy PSX -> USB     (6666:0667)
+	  			   * raphnet WUSBMote v2.2             (289B:0080)
+	  			   * Neither serves a standalone HID descriptor request. */
 	  			  HID_Handle = phost->pActiveClass->pData[phost->pActiveClass->iface_initnum];
 	  			  HID_Handle->state     = HID_INIT;
 	  			  HID_Handle->ctl_state = HID_REQ_INIT;
@@ -416,6 +419,14 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  		  		         status = USBH_OK;
 	  		  		         break;
 	  		  		      }
+	  		  		   }
+	  		  		}
+	  		  		if (status != USBH_OK) {
+	  		  		   uint16_t vid = phost->device.DevDesc.idVendor;
+	  		  		   uint16_t pid = phost->device.DevDesc.idProduct;
+	  		  		   if (vid == 0x289B && pid == 0x0080) {
+	  		  		      /* raphnet WUSBMote v2.2 */
+	  		  		      status = USBH_OK;
 	  		  		   }
 	  		  		}
 	  		  		if (status == USBH_OK) break;
