@@ -917,6 +917,33 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 					extern USBH_HandleTypeDef hUsbHostHS;
 					WriteData((uint8_t)hUsbHostHS.EnumState);
 				}
+				/* Class-init sub-state for diagnosing HOST_CHECK_CLASS hangs.
+				 * Reads pActiveClass->iface_init.  Values for the HID class:
+				 *   0=INIT  1=PREP  2=READHID  3=READHIDRPTDESC
+				 *   4=INITSUBCLASS  5=INITENDPNT  6=SELECTIFACE */
+				else if (address == 0x00) {
+					extern USBH_HandleTypeDef hUsbHostFS;
+					uint8_t v = 0xFF;
+					if (hUsbHostFS.pActiveClass) v = (uint8_t)hUsbHostFS.pActiveClass->iface_init;
+					WriteData(v);
+				} else if (address == 0x02) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					uint8_t v = 0xFF;
+					if (hUsbHostHS.pActiveClass) v = (uint8_t)hUsbHostHS.pActiveClass->iface_init;
+					WriteData(v);
+				} else if (address == 0x03) {
+					/* pActiveClass->iface_initnum for FS -- shows which
+					 * interface is currently being processed. */
+					extern USBH_HandleTypeDef hUsbHostFS;
+					uint8_t v = 0xFF;
+					if (hUsbHostFS.pActiveClass) v = (uint8_t)hUsbHostFS.pActiveClass->iface_initnum;
+					WriteData(v);
+				} else if (address == 0x04) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					uint8_t v = 0xFF;
+					if (hUsbHostHS.pActiveClass) v = (uint8_t)hUsbHostHS.pActiveClass->iface_initnum;
+					WriteData(v);
+				}
 				/* Raw HID report window: $18..$1F = raw_report[offset+0..7].
 				 * `offset` is set by writing $17 (must be a multiple of 8 in
 				 * range 0..24).  Reading $17 returns the actual HID report

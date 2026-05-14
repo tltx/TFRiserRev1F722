@@ -243,6 +243,14 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  			   * isn't usable for this device anyway; the Amiga-side tool
 	  			   * uses raw_report bytes for mapping. */
 	  			  phost->pActiveClass->iface_init = IFACE_INITSUBCLASS;
+	  		  } else if (phost->pActiveClass->iface_initnum > 0) {
+	  			  /* Composite device: a later interface refuses its HID
+	  			   * descriptor (e.g. vendor/management interface alongside
+	  			   * the gamepad).  Skip and try the next interface --
+	  			   * we already have an earlier one initialised.  Without
+	  			   * this fallback the whole HID class init hangs at
+	  			   * HOST_CHECK_CLASS forever. */
+	  			  phost->pActiveClass->iface_init = IFACE_SELECTIFACE;
 	  		  }
 	  	    }
 
@@ -264,6 +272,13 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  		  		   parse_report_descriptor(phost->device.Data, HID_Handle->HID_Desc.wItemLength,&(HID_Handle->HID_Desc.RptDesc));
 
 	  		  		   phost->pActiveClass->iface_init = IFACE_INITSUBCLASS;
+	  		  	    }
+	  		  	    else if (phost->pActiveClass->iface_initnum > 0)
+	  		  	    {
+	  		  		   /* Same fallback as in IFACE_READHID: a later interface
+	  		  		    * refused its report descriptor.  Skip ahead so the
+	  		  		    * earlier (working) interface can be used. */
+	  		  		   phost->pActiveClass->iface_init = IFACE_SELECTIFACE;
 	  		  	    }
 	  		  	  }
 	  		  	  break;
@@ -380,6 +395,31 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 
 	  	case IFACE_SELECTIFACE:
 	  		  	{
+	  		  		/* Skip remaining interfaces for devices whose later
+	  		  		 * interfaces stall HID class init.  Two triggers:
+	  		  		 *  (a) we've already installed a gamepad Init -- gamepads
+	  		  		 *      are single-interface and the next interface is
+	  		  		 *      almost always vendor/management;
+	  		  		 *  (b) a VID:PID quirks list for devices we know to have
+	  		  		 *      a problematic later interface even when the parser
+	  		  		 *      didn't classify interface 0 as a joystick (e.g.
+	  		  		 *      raphnet WUSBMote v2.2).
+	  		  		 * Keyboard+mouse combos stay unaffected because neither
+	  		  		 * trigger fires for them. */
+	  		  		{
+	  		  		   uint8_t i;
+	  		  		   for (i = 0; i <= phost->pActiveClass->iface_initnum
+	  		  		             && i < USBH_MAX_NUM_INTERFACES; i++) {
+	  		  		      HID_HandleTypeDef *h =
+	  		  		         (HID_HandleTypeDef *)phost->pActiveClass->pData[i];
+	  		  		      if (h && h->Init == USBH_HID_GamepadInit) {
+	  		  		         status = USBH_OK;
+	  		  		         break;
+	  		  		      }
+	  		  		   }
+	  		  		}
+	  		  		if (status == USBH_OK) break;
+
 	  		  	    //Check if we have any other interfaces to phost->device.CfgDesc.bNumInterfaces
 	  		  		if (++phost->pActiveClass->iface_initnum<phost->device.CfgDesc.bNumInterfaces)
 	  		  		{
@@ -493,29 +533,22 @@ static USBH_StatusTypeDef USBH_HID_ClassRequest(USBH_HandleTypeDef *phost)
 
     classReqStatus = USBH_HID_SetIdle(phost, 0U, 0U);
 
-    /* set Idle */
-    if (classReqStatus == USBH_OK)
+    /* set Idle.  Advance on any non-BUSY result.  USBH_FAIL gets the
+     * same treatment as USBH_NOT_SUPPORTED here -- some cheap devices
+     * STALL SET_IDLE rather than declining it cleanly, and previously
+     * that left ctl_state pinned and hung class init forever. */
+    if (classReqStatus != USBH_BUSY)
     {
       HID_Handle->ctl_state = HID_REQ_SET_PROTOCOL;
-    }
-    else
-    {
-      if (classReqStatus == USBH_NOT_SUPPORTED)
-      {
-        HID_Handle->ctl_state = HID_REQ_SET_PROTOCOL;
-      }
     }
     break;
 
   case HID_REQ_SET_PROTOCOL:
-    /* set protocol */
+    /* set protocol -- same tolerance as SET_IDLE above. */
     classReqStatus = USBH_HID_SetProtocol(phost, 0U);
-    if (classReqStatus == USBH_OK)
+    if (classReqStatus != USBH_BUSY)
     {
       HID_Handle->ctl_state = HID_REQ_IDLE;
-
-      /* all requests performed*/
-
       status = USBH_OK;
     }
     break;

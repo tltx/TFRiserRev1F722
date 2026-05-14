@@ -223,16 +223,26 @@ static void show_ports(void)
     printf("  bus-read sentinel: $16=%02X (expect A5)\n", sentinel);
     unsigned char hs_enum = riser[0x07];
     unsigned char fs_enum = riser[0x05];
+    unsigned char hs_iface = riser[0x02];
+    unsigned char fs_iface = riser[0x00];
+    unsigned char hs_inum = riser[0x04];
+    unsigned char fs_inum = riser[0x03];
     static const char *enames[] = {
         "IDLE","GET_FULL_DEV_DESC","SET_ADDR","GET_CFG_DESC",
         "GET_FULL_CFG_DESC","GET_MFC_STR","GET_PROD_STR","GET_SN_STR"
     };
+    static const char *inames[] = {
+        "INIT","READHID","READHIDRPTDESC",
+        "INITSUBCLASS","INITENDPNT","SELECTIFACE"
+    };
     const char *hsen = (hs_enum < 8) ? enames[hs_enum] : "?";
     const char *fsen = (fs_enum < 8) ? enames[fs_enum] : "?";
-    printf("  HS host: gState=%-12s  conn=%d  EnumState=%s\n",
-           gstate_name(hs), (hs & 0x80) ? 1 : 0, hsen);
-    printf("  FS host: gState=%-12s  conn=%d  EnumState=%s\n",
-           gstate_name(fs), (fs & 0x80) ? 1 : 0, fsen);
+    const char *hsif = (hs_iface < 6) ? inames[hs_iface] : "?";
+    const char *fsif = (fs_iface < 6) ? inames[fs_iface] : "?";
+    printf("  HS host: gState=%-12s  conn=%d  EnumState=%s  iface=%s/i%u\n",
+           gstate_name(hs), (hs & 0x80) ? 1 : 0, hsen, hsif, (unsigned)hs_inum);
+    printf("  FS host: gState=%-12s  conn=%d  EnumState=%s  iface=%s/i%u\n",
+           gstate_name(fs), (fs & 0x80) ? 1 : 0, fsen, fsif, (unsigned)fs_inum);
 }
 
 static void show(int pad)
