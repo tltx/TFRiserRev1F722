@@ -168,8 +168,18 @@ static uint16_t collect_bits(uint8_t *p, uint16_t offset, uint8_t size, int is_s
 USBH_StatusTypeDef USBH_HID_GamepadInit(USBH_HandleTypeDef *phost)
 {
   HID_HandleTypeDef *HID_Handle =  (HID_HandleTypeDef *) phost->pActiveClass->pData[phost->device.current_interface];
-  uint8_t reportSize = 0U;
-  reportSize = HID_Handle->HID_Desc.RptDesc.report_size;
+  /* Prefer the endpoint's wMaxPacketSize (already stashed into
+   * HID_Handle->length by usbh_hid.c:IFACE_READHID) over the descriptor
+   * parser's computed report_size.  Many cheap gamepads have HID descriptors
+   * the parser doesn't fully understand: it can yield 0 (decoder always
+   * short-circuits and no reports reach the app) or a value smaller than
+   * the actual report (button bytes get truncated).  wMaxPacketSize is the
+   * largest packet the gamepad's endpoint can send and accommodates short
+   * packets safely. */
+  uint8_t reportSize = (uint8_t)HID_Handle->length;
+  uint8_t parsedSize = HID_Handle->HID_Desc.RptDesc.report_size;
+  if (reportSize == 0U) reportSize = parsedSize;
+  if (reportSize == 0U) reportSize = 8U;   /* last-ditch sane default */
 
 
 
@@ -193,15 +203,14 @@ USBH_StatusTypeDef USBH_HID_GamepadInit(USBH_HandleTypeDef *phost)
   */
 HID_gamepad_Info_TypeDef *USBH_HID_GetGamepadInfo(USBH_HandleTypeDef *phost)
 {
-	//refresh value of joymap and return value
-	if(USBH_HID_GamepadDecode(phost)== USBH_OK)
-	{
-		return &gamepad_info;
-	}
-	else
-	{
-		return NULL;
-	}
+	/* Best-effort refresh from the FIFO; on failure (no new data this tick,
+	 * or short FIFO read) we keep the previously-decoded state.  Always
+	 * return the static gamepad_info so the caller can rely on the pointer
+	 * being stable while the gamepad is connected -- otherwise callers see
+	 * gamepad1/gamepad2 transiently NULL between USB reports, which makes
+	 * the live-state and raw-report registers permanently read as zero. */
+	(void)USBH_HID_GamepadDecode(phost);
+	return &gamepad_info;
 }
 
 
@@ -221,9 +230,25 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	    return USBH_FAIL;
 	  }
 
-	  if(USBH_HID_FifoRead(&HID_Handle->fifo, gamepad_report_data, HID_Handle->length) ==  HID_Handle->length)
-	    {
+	  uint16_t bytes_read = USBH_HID_FifoRead(&HID_Handle->fifo, gamepad_report_data, HID_Handle->length);
 
+	  /* Snapshot the raw report bytes BEFORE the descriptor-aware parser
+	   * runs, even if the FIFO returned a short read.  Many cheap gamepads
+	   * send variable-length reports; refusing to handle short reads means
+	   * the raw view stays at zero forever. */
+	  if (bytes_read > 0) {
+		uint16_t copy_len = bytes_read;
+		if (copy_len > sizeof(gamepad_info.raw_report))
+			copy_len = sizeof(gamepad_info.raw_report);
+		for (uint16_t i = 0; i < copy_len; i++)
+			gamepad_info.raw_report[i] = gamepad_report_data[i];
+		for (uint16_t i = copy_len; i < sizeof(gamepad_info.raw_report); i++)
+			gamepad_info.raw_report[i] = 0;
+		gamepad_info.raw_report_len = (uint8_t)copy_len;
+	  }
+
+	  if (bytes_read == HID_Handle->length)
+	    {
 
 		uint8_t jmap = 0;
 		uint8_t btn = 0;

@@ -26,6 +26,7 @@
 #include "dwt_delay.h"
 #include "amiga.h"
 #include "rtc_msm6242.h"
+#include "gamepad_map.h"
 
 /* USER CODE END Includes */
 
@@ -66,6 +67,7 @@ static  int8_t joy1datHDelta = 0;
 static  int8_t joy1datLDelta = 0;
 
 static  uint8_t sensitivityMouse;
+static  uint8_t raw_report_offset;   /* base index into gamepad raw_report */
 
 static  gamepad_buttons_t gamepad1_buttons;
 static  gamepad_buttons_t gamepad2_buttons;
@@ -194,6 +196,7 @@ int main(void)
 	} else {
 		sensitivityMouse = 2;
 	}
+	gamepad_map_load();
 
   /* USER CODE END 2 */
 
@@ -292,9 +295,12 @@ int main(void)
 		}
 
 		if (usb->mouse != NULL) {
-			/* HID decoder assigns (not accumulates) x,y per report, so the
-			 * delta must be consumed exactly once -- otherwise the main loop
-			 * re-applies the same value thousands of times between reports. */
+			/* Consume the latest HID delta exactly once.  The HID decoder
+			 * assigns (not accumulates) x,y on each report, so leaving them
+			 * non-zero here causes the main loop to re-apply the same delta
+			 * thousands of times between reports -- pointer races in one
+			 * direction, then snaps back when the next report's drift is
+			 * applied just as hard. */
 			int16_t mx = usb->mouse->x;
 			int16_t my = usb->mouse->y;
 			usb->mouse->x = 0;
@@ -356,7 +362,8 @@ int main(void)
 			joy1datHDelta = 0;
 			joy1datLDelta = 0;
 
-			//usb->gamepad1->gamepad_extraBtn;
+			uint16_t gp1w = gp_combine(usb->gamepad1->gamepad_data,
+					usb->gamepad1->gamepad_extraBtn);
 
 			if (usb->gamepad1->gamepad_data >> 1 & 0x1)
 			{
@@ -394,7 +401,7 @@ int main(void)
 				joy1datLDelta = 0x2;
 			}
 			if ((POTGORH >> 5) & 1U) { //check if register is output enable
-				if (usb->gamepad1->gamepad_data >> 5 & 0x1) {
+				if (gp_btn(gp1w, gamepad1_map.src[GMAP_FIRE2])) {
 					POTGORH &= ~(1UL << 4);
 				} else {
 					POTGORH |= 1UL << 4;
@@ -402,51 +409,35 @@ int main(void)
 			}
 
 			if ((POTGORH >> 7) & 1U) { //check if register is output enable
-				if (usb->gamepad1->gamepad_data >> 4 & 0x1) {
+				if (gp_btn(gp1w, gamepad1_map.src[GMAP_FIRE3])) {
 					POTGORH &= ~(1UL << 6);
 				} else {
 					POTGORH |= 1UL << 6;
 				}
 			}
 
-			if (usb->gamepad1->gamepad_data >> 6 & 0x1) {
+			if (gp_btn(gp1w, gamepad1_map.src[GMAP_FIRE1])) {
 				CIAAPRA &= ~(1UL << 7);
 
 			} else {
 				CIAAPRA |= 1UL << 7;
 			}
 
-			//BTN1 =  (*joymap>>6&0x1);
-			//BTN2 =  (*joymap>>5&0x1);
-			//BTN3 =  (*joymap>>4&0x1);
-			//BTN4 =  (*joymap>>7&0x1);
-
-			//gamepad_extraBtn
-			// Play/Start - 0x20 32
-			//right front - 0x02 2
-			//left front - 0x01 1
-			//address = (address << 1) | ((GPIOA->IDR >> 10) & 1U); //PA10 - A4
-
 			gamepad1_buttons.buttons_data = 1; // Gamepad id
-
 			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_extraBtn >> 5 & 0x1);
-
+					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_PLAY]);
 			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_extraBtn & 0x1);
+					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_RW]);
 			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_extraBtn >> 1 & 0x1);
-
+					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_FF]);
 			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_data >> 7 & 0x1);
-
+					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_GREEN]);
 			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_data >> 4 & 0x1);
-
+					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_YELLOW]);
 			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_data >> 6 & 0x1);
+					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_RED]);
 			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_data >> 5 & 0x1);
+					| !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_BLUE]);
 			//__enable_irq();
 
 		}
@@ -459,6 +450,9 @@ int main(void)
 
 			joy0datHDelta = 0;
 			joy0datLDelta = 0;
+
+			uint16_t gp2w = gp_combine(usb->gamepad2->gamepad_data,
+					usb->gamepad2->gamepad_extraBtn);
 
 			if (usb->gamepad2->gamepad_data >> 1 & 0x1)
 			{
@@ -500,7 +494,7 @@ int main(void)
 
 			}
 			if ((POTGORH >> 1) & 1U) { //check if register is output enable
-				if (usb->gamepad2->gamepad_data >> 5 & 0x1) {
+				if (gp_btn(gp2w, gamepad2_map.src[GMAP_FIRE2])) {
 					POTGORH &= ~(1UL << 0);
 				} else {
 					POTGORH |= 1UL << 0;
@@ -508,39 +502,34 @@ int main(void)
 			}
 
 			if ((POTGORH >> 3) & 1U) { //check if register is output enable
-				if (usb->gamepad2->gamepad_data >> 4 & 0x1) {
+				if (gp_btn(gp2w, gamepad2_map.src[GMAP_FIRE3])) {
 					POTGORH &= ~(1UL << 2);
 				} else {
 					POTGORH |= 1UL << 2;
 				}
 			}
 
-			if (usb->gamepad2->gamepad_data >> 6 & 0x1) {
+			if (gp_btn(gp2w, gamepad2_map.src[GMAP_FIRE1])) {
 				CIAAPRA &= ~(1UL << 6);
 
 			} else {
 				CIAAPRA |= 1UL << 6;
 			}
 			gamepad2_buttons.buttons_data = 1; // Gamepad id
-
 			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_extraBtn >> 5 & 0x1);
-
+					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_PLAY]);
 			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_extraBtn & 0x1);
+					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_RW]);
 			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_extraBtn >> 1 & 0x1);
-
+					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_FF]);
 			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_data >> 7 & 0x1);
-
+					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_GREEN]);
 			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_data >> 4 & 0x1);
-
+					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_YELLOW]);
 			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_data >> 6 & 0x1);
+					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_RED]);
 			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_data >> 5 & 0x1);
+					| !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_BLUE]);
 
 			//__enable_irq();
 		}
@@ -868,6 +857,70 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 				WriteData(joy1datL);
 				break;
 
+			default:
+				/* Gamepad map read: 0x20..0x29 = pad1[0..9], 0x2A..0x33 = pad2[0..9] */
+				if (address >= 0x20 && address <= 0x29) {
+					WriteData(gamepad1_map.src[address - 0x20]);
+				} else if (address >= 0x2A && address <= 0x33) {
+					WriteData(gamepad2_map.src[address - 0x2A]);
+				}
+				/* New registers live in $10..$1F.  The riser's external
+				 * address decoder appears not to pulse the STM32 EXTI for the
+				 * $34..$3F range, so anything we put there is unreachable. */
+				/* Live gamepad state for watch/learn:
+				 *   0x10 = pad1 data byte (D-pad + buttons 0..3)
+				 *   0x11 = pad1 extraBtn (buttons 4..11)
+				 *   0x12 = pad2 data
+				 *   0x13 = pad2 extraBtn
+				 * Returns 0 when no pad is connected. */
+				else if (address == 0x10) {
+					WriteData((usb && usb->gamepad1) ? usb->gamepad1->gamepad_data : 0);
+				} else if (address == 0x11) {
+					WriteData((usb && usb->gamepad1) ? usb->gamepad1->gamepad_extraBtn : 0);
+				} else if (address == 0x12) {
+					WriteData((usb && usb->gamepad2) ? usb->gamepad2->gamepad_data : 0);
+				} else if (address == 0x13) {
+					WriteData((usb && usb->gamepad2) ? usb->gamepad2->gamepad_extraBtn : 0);
+				}
+				/* Per-port device type for identifying which physical USB jack
+				 * is wired to pad 1 (HS) vs pad 2 (FS) without needing a gamepad
+				 * connected. 0=none, 1=keyboard, 2=mouse, 3=gamepad. */
+				else if (address == 0x14) {
+					WriteData(usb ? usb->hs_device_type : 0);
+				} else if (address == 0x15) {
+					WriteData(usb ? usb->fs_device_type : 0);
+				}
+				/* Sentinel: always returns 0xA5. */
+				else if (address == 0x16) {
+					WriteData(0xA5);
+				}
+				/* Raw HID report window: $18..$1F = raw_report[offset+0..7].
+				 * `offset` is set by writing $17 (must be a multiple of 8 in
+				 * range 0..24).  Reading $17 returns the actual HID report
+				 * length so the Amiga side knows how many bytes are meaningful. */
+				else if (address == 0x17) {
+					if (usb && (usb->gamepad1 || usb->gamepad2)) {
+						HID_gamepad_Info_TypeDef *gp =
+							usb->gamepad1 ? usb->gamepad1 : usb->gamepad2;
+						WriteData(gp->raw_report_len);
+					} else {
+						WriteData(0);
+					}
+				} else if (address >= 0x18 && address <= 0x1F) {
+					if (usb && (usb->gamepad1 || usb->gamepad2)) {
+						HID_gamepad_Info_TypeDef *gp =
+							usb->gamepad1 ? usb->gamepad1 : usb->gamepad2;
+						uint8_t idx = raw_report_offset + (address - 0x18);
+						if (idx < sizeof(gp->raw_report)) {
+							WriteData(gp->raw_report[idx]);
+						} else {
+							WriteData(0);
+						}
+					} else {
+						WriteData(0);
+					}
+				}
+				break;
 			}
 	} else {
 		if (address == 0x01) { //CIAADRA BFE201
@@ -906,6 +959,33 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 			if (sensVal > 0) {
 				sensitivityMouse = sensVal;
 				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, sensitivityMouse);
+			}
+		}
+
+		/* Raw-report window selector: pick which 8-byte slice of the
+		 * gamepad's 32-byte raw_report is exposed at $18..$1F. Only multiples
+		 * of 8 in [0,24] are accepted; anything else clamps to 0. */
+		if (address == 0x17) {
+			uint8_t off = ReadData();
+			if (off == 0 || off == 8 || off == 16 || off == 24) {
+				raw_report_offset = off;
+			} else {
+				raw_report_offset = 0;
+			}
+		}
+
+		/* Gamepad map write: 0x20..0x29 = pad1[0..9], 0x2A..0x33 = pad2[0..9].
+		 * Value is a source-bit index 0..15, or 0xFF for "unmapped".
+		 * Side-effect: persists both maps to RTC backup registers. */
+		if (address >= 0x20 && address <= 0x33) {
+			uint8_t val = ReadData();
+			if (val < 16 || val == GAMEPAD_MAP_UNMAPPED) {
+				if (address <= 0x29) {
+					gamepad1_map.src[address - 0x20] = val;
+				} else {
+					gamepad2_map.src[address - 0x2A] = val;
+				}
+				gamepad_map_save();
 			}
 		}
 	}

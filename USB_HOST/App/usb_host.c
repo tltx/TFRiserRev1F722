@@ -90,6 +90,11 @@ if (HSReady==1)
 		USBH_SelectInterface(&hUsbHostHS, 0);
 
 		usbDev.keyboardusbhost = NULL;
+		/* Compute the new port-type into a local and store it as a single
+		 * write at the end of the HS block.  Writing the type byte directly
+		 * to usbDev mid-detection leaves a brief NONE window that the EXTI
+		 * read for $14 can catch, making the Amiga see a phantom empty port. */
+		uint8_t new_hs_type = USB_DEV_NONE;
 
 		  switch(HID_Handle1->HID_Desc.RptDesc.type)
 		  {
@@ -97,6 +102,7 @@ if (HSReady==1)
 			  {
 		  		usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostHS);
 		  		usbDev.keyboardusbhost = &hUsbHostHS;
+		  		new_hs_type = USB_DEV_KEYBOARD;
 			  }
 			  break;
 
@@ -105,6 +111,7 @@ if (HSReady==1)
 		  		usbDev.mouse= USBH_HID_GetMouseInfo(&hUsbHostHS);
 		  		usbDev.mouseDetected = 1;
 		  		usbDev.overridePorts = 1;
+		  		new_hs_type = USB_DEV_MOUSE;
 		  	  }
 		  	 break;
 
@@ -112,6 +119,7 @@ if (HSReady==1)
 		      {
 		    	  usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
 		    	  usbDev.overridePorts = 1;
+		    	  new_hs_type = USB_DEV_GAMEPAD;
 
 		  	   }
 		      break;
@@ -133,6 +141,8 @@ if (HSReady==1)
 			{
 				usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostHS);
 				usbDev.keyboardusbhost = &hUsbHostHS;
+				if (new_hs_type == USB_DEV_NONE)
+					new_hs_type = USB_DEV_KEYBOARD;
 			}
 			break;
 
@@ -141,6 +151,8 @@ if (HSReady==1)
 				usbDev.mouse= USBH_HID_GetMouseInfo(&hUsbHostHS);
 				usbDev.mouseDetected = 1;
 				usbDev.overridePorts = 1;
+				if (new_hs_type != USB_DEV_GAMEPAD)
+					new_hs_type = USB_DEV_MOUSE;
 			}
 			break;
 
@@ -148,12 +160,15 @@ if (HSReady==1)
 			{
 				usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
 				usbDev.overridePorts = 1;
+				new_hs_type = USB_DEV_GAMEPAD;
 			}
 			break;
 
 		}
 		 USBH_SelectInterface(&hUsbHostHS, currentInterfaceHS);
 	}
+
+	usbDev.hs_device_type = new_hs_type;   /* single atomic store */
 
 
 
@@ -173,12 +188,15 @@ if (FSReady==1)
 		HID_Handle1 = hUsbHostFS.pActiveClass->pData[0];
 		USBH_SelectInterface(&hUsbHostFS, 0);
 
+		uint8_t new_fs_type = USB_DEV_NONE;
+
 		  switch(HID_Handle1->HID_Desc.RptDesc.type)
 		  {
 		  	  case REPORT_TYPE_KEYBOARD:
 			  {
 		  		usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostFS);
 		  		usbDev.keyboardusbhost = &hUsbHostFS;
+		  		new_fs_type = USB_DEV_KEYBOARD;
 			  }
 			  break;
 
@@ -187,6 +205,7 @@ if (FSReady==1)
 		  		usbDev.mouse= USBH_HID_GetMouseInfo(&hUsbHostFS);
 		  		usbDev.mouseDetected = 1;
 		  		usbDev.overridePorts = 1;
+		  		new_fs_type = USB_DEV_MOUSE;
 		  	  }
 		  	 break;
 
@@ -194,6 +213,7 @@ if (FSReady==1)
 		      {
 		    	  usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
 		    	  usbDev.overridePorts = 1;
+		    	  new_fs_type = USB_DEV_GAMEPAD;
 		  	   }
 		      break;
 
@@ -212,6 +232,8 @@ if (FSReady==1)
 			{
 				usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostFS);
 				usbDev.keyboardusbhost = &hUsbHostFS;
+				if (new_fs_type == USB_DEV_NONE)
+					new_fs_type = USB_DEV_KEYBOARD;
 			}
 			break;
 
@@ -220,6 +242,8 @@ if (FSReady==1)
 				usbDev.mouse= USBH_HID_GetMouseInfo(&hUsbHostFS);
 				usbDev.mouseDetected = 1;
 				usbDev.overridePorts = 1;
+				if (new_fs_type != USB_DEV_GAMEPAD)
+					new_fs_type = USB_DEV_MOUSE;
 			}
 			break;
 
@@ -227,6 +251,7 @@ if (FSReady==1)
 			{
 				usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
 				usbDev.overridePorts = 1;
+				new_fs_type = USB_DEV_GAMEPAD;
 			}
 			break;
 
@@ -234,6 +259,8 @@ if (FSReady==1)
 		 USBH_SelectInterface(&hUsbHostFS, currentInterfaceFS);
 
 }
+
+	usbDev.fs_device_type = new_fs_type;   /* single atomic store */
 
 
 }}
