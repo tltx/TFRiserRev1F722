@@ -330,7 +330,41 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	    uint16_t vid = phost->device.DevDesc.idVendor;
 	    uint16_t pid = phost->device.DevDesc.idProduct;
 
-	    if (vid == 0x6666 && pid == 0x0667
+	    if (vid == 0x289B && pid == 0x0080
+	        && gamepad_info.raw_report_len >= 15) {
+	      /* raphnet WUSBMote v2.2 with SNES adapter.  Report bytes:
+	       *   byte 13 = SNES buttons bitmap (bit 0..7).  In the SNES
+	       *             firmware the WUSBMote ships with, interface 0
+	       *             collapses some SNES buttons onto the same bit
+	       *             (e.g. A, Select and X all toggle bit 4); only
+	       *             5 of the 8 bits are distinct.
+	       *   byte 14 = D-pad: bit 4 = UP, bit 5 = LEFT, bit 6 = RIGHT,
+	       *             bit 7 = DOWN (the last is inferred -- our test
+	       *             didn't capture it cleanly).
+	       *   bytes 9, 10, 11, 12, 15 also change with shoulder presses
+	       *     but the same information is already in byte 13. */
+	      uint8_t btns = gamepad_info.raw_report[13];
+	      uint8_t dpad = gamepad_info.raw_report[14];
+
+	      /* D-pad bit-to-JOY_* mapping is empirically rotated from what
+	       * you'd expect: setting JOY_LEFT in gamepad_data results in
+	       * the Amiga seeing RIGHT, JOY_RIGHT -> DOWN, JOY_DOWN -> LEFT,
+	       * JOY_UP -> UP.  Reverse the rotation so the physical
+	       * direction matches what the Amiga sees. */
+	      uint8_t d = 0;
+	      if (dpad & 0x10U) d |= JOY_UP;     /* physical UP    -> Amiga UP    */
+	      if (dpad & 0x20U) d |= JOY_DOWN;   /* physical LEFT  -> Amiga LEFT  */
+	      if (dpad & 0x40U) d |= JOY_LEFT;   /* physical RIGHT -> Amiga RIGHT */
+	      if (dpad & 0x80U) d |= JOY_RIGHT;  /* physical DOWN  -> Amiga DOWN  */
+	      /* Pass byte 13 bits 0..3 through to USB buttons 0..3 and
+	       * bits 4..7 to USB buttons 4..7 -- the existing gamepad-map
+	       * tool (`risergamepad <pad> <slot> b<N>`) can then bind each
+	       * bit to whichever CD32 slot the user prefers. */
+	      d |= (btns & 0x0FU) << JOY_BTN_SHIFT;
+	      gamepad_info.gamepad_data = d;
+	      gamepad_info.gamepad_extraBtn = (btns >> 4) & 0x0FU;
+	    }
+	    else if (vid == 0x6666 && pid == 0x0667
 	        && gamepad_info.raw_report_len >= 3) {
 	      /* WiseGroup SmartJoy PSX -> USB.  3-byte report:
 	       *   byte 0 = buttons: X=b0 A=b1 B=b2 Y=b3 Sel=b4 Start=b5 L=b6 R=b7
