@@ -897,11 +897,16 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 				 * 4=DETECT_SPEED 5=ENUMERATION 6=CLASS_REQ 7=INPUT
 				 * 8=SET_CONFIG 9=SET_WAKEUP 10=CHECK_CLASS 11=CLASS 12=SUSPEND
 				 * 13=ABORT */
-				else if (address == 0x1C) {
+				/* Note: moved off $1C/$1D because that range overlaps the
+				 * raw HID report window $18..$1F and the specific-address
+				 * handlers shadow the range handler -- raw_report bytes at
+				 * window offsets 4 and 5 were being silently overwritten
+				 * with this gState info in the Amiga-side view. */
+				else if (address == 0x34) {
 					extern USBH_HandleTypeDef hUsbHostHS;
 					WriteData((uint8_t)(hUsbHostHS.gState & 0x7F)
 						| ((hUsbHostHS.device.is_connected & 1) << 7));
-				} else if (address == 0x1D) {
+				} else if (address == 0x35) {
 					extern USBH_HandleTypeDef hUsbHostFS;
 					WriteData((uint8_t)(hUsbHostFS.gState & 0x7F)
 						| ((hUsbHostFS.device.is_connected & 1) << 7));

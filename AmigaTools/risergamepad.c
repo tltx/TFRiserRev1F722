@@ -215,8 +215,8 @@ static void show_ports(void)
     unsigned char p1 = riser[PAD1_PORT_TYPE];
     unsigned char p2 = riser[PAD2_PORT_TYPE];
     unsigned char sentinel = riser[SENTINEL_REG];
-    unsigned char hs = riser[0x1C];
-    unsigned char fs = riser[0x1D];
+    unsigned char hs = riser[0x34];   /* gState moved off $1C to avoid */
+    unsigned char fs = riser[0x35];   /* shadowing the raw window $18..$1F */
     printf("USB ports:\n");
     printf("  Pad 1 port (HS): %s   [$14=%02X]\n", port_name(p1), p1);
     printf("  Pad 2 port (FS): %s   [$15=%02X]\n", port_name(p2), p2);
@@ -515,6 +515,135 @@ static int cmd_raw(void)
     return 0;
 }
 
+/* Number of bits different between two raw report snapshots. */
+static int raw_popcount_diff(const unsigned char *a, const unsigned char *b)
+{
+    static const unsigned char nbits[16] = {
+        0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4
+    };
+    int sum = 0, i;
+    for (i = 0; i < RAW_REPORT_TOTAL; i++) {
+        unsigned char d = a[i] ^ b[i];
+        sum += nbits[d & 0xF] + nbits[(d >> 4) & 0xF];
+    }
+    return sum;
+}
+
+/* Interactive learn-raw.  For each slot, samples raw bytes continuously
+ * while waiting for the user to press Enter, keeping the snapshot with
+ * the largest XOR against baseline.  That way the user holds the button
+ * THEN hits Enter -- the actual button-down state is captured even if
+ * they release before/while pressing Enter.
+ *
+ * Uses line-buffered (cooked) reads so the terminal mode is never
+ * altered -- no risk of leaving the shell in raw mode if the program
+ * exits abruptly.  Output is one short line per slot for low-res
+ * Amiga screens. */
+static int cmd_learn_raw(void)
+{
+    static const char *raw_slot_names[] = {
+        "UP   ", "DOWN ", "LEFT ", "RIGHT",
+        "fire1", "fire2", "fire3",
+        "play ", "rw   ", "ff   ",
+        "green", "yelow", "red  ", "blue "
+    };
+    enum { N_RAW_SLOTS = 14 };
+    unsigned char baseline[RAW_REPORT_TOTAL];
+    unsigned char best[RAW_REPORT_TOTAL];
+    unsigned char curr[RAW_REPORT_TOTAL];
+    unsigned char captured[N_RAW_SLOTS][RAW_REPORT_TOTAL];
+    int taken[N_RAW_SLOTS];
+    int i, k;
+    char line[8];
+    BPTR cin = Input();
+
+    printf("Learn-raw: discovers which raw HID bytes/bits each button uses.\n");
+    printf("Release everything and press Enter to capture idle baseline\n");
+    printf("('q' Enter to quit, 's' Enter to skip a slot):\n");
+    fflush(stdout);
+
+    /* baseline: cooked-mode Read blocks until Enter */
+    if (Read(cin, line, sizeof(line)) <= 0) return 0;
+    if (line[0] == 'q' || line[0] == 'Q') return 0;
+    read_all_raw(baseline);
+    printf("Baseline captured.\n\n");
+    fflush(stdout);
+
+    for (i = 0; i < N_RAW_SLOTS; i++) taken[i] = 0;
+
+    for (i = 0; i < N_RAW_SLOTS; i++) {
+        printf("Hold [%s], then press Enter: ", raw_slot_names[i]);
+        fflush(stdout);
+
+        /* Sample raw bytes as fast as we can while user types.  Switch
+         * to raw mode just long enough to do the polling, then back to
+         * cooked.  Pick the snapshot that differs most from baseline. */
+        SetMode(cin, 1);
+        drain_input(cin);
+        for (k = 0; k < RAW_REPORT_TOTAL; k++) best[k] = baseline[k];
+        int best_diff = 0;
+        int got = 0;
+        char c = 0;
+        for (;;) {
+            read_all_raw(curr);
+            int diff = raw_popcount_diff(curr, baseline);
+            if (diff > best_diff) {
+                best_diff = diff;
+                for (k = 0; k < RAW_REPORT_TOTAL; k++) best[k] = curr[k];
+            }
+            if (WaitForChar(cin, 20000)) {
+                if (Read(cin, &c, 1) > 0
+                    && (c == '\n' || c == '\r' || c == 's' || c == 'S'
+                        || c == 'q' || c == 'Q')) { got = 1; break; }
+            }
+            if (CheckSignal(SIGBREAKF_CTRL_C)) { c = 'q'; got = 1; break; }
+        }
+        SetMode(cin, 0);
+
+        if (!got || c == 'q' || c == 'Q') { printf("done.\n"); break; }
+        if (c == 's' || c == 'S')         { printf("skip.\n"); continue; }
+
+        for (k = 0; k < RAW_REPORT_TOTAL; k++) captured[i][k] = best[k];
+        taken[i] = 1;
+
+        int any = 0;
+        for (k = 0; k < RAW_REPORT_TOTAL; k++) {
+            unsigned char d = best[k] ^ baseline[k];
+            if (d) {
+                printf("%sbyte%d^%02X", any ? ", " : "", k, d);
+                any = 1;
+            }
+        }
+        if (!any) printf("(no change detected)");
+        printf("\n");
+        fflush(stdout);
+    }
+
+    /* Final summary. */
+    printf("\nBaseline:");
+    for (k = 0; k < RAW_REPORT_TOTAL; k++) {
+        if ((k & 0x7) == 0) printf("\n  [%02d]", k);
+        printf(" %02X", baseline[k]);
+    }
+    printf("\n\nPer-button XOR (byte=value^delta):\n");
+    for (i = 0; i < N_RAW_SLOTS; i++) {
+        if (!taken[i]) continue;
+        printf("  %s :", raw_slot_names[i]);
+        int any = 0;
+        for (k = 0; k < RAW_REPORT_TOTAL; k++) {
+            unsigned char d = captured[i][k] ^ baseline[k];
+            if (d) {
+                printf("%s %d=%02X^%02X", any ? "," : "",
+                       k, captured[i][k], d);
+                any = 1;
+            }
+        }
+        if (!any) printf(" (none)");
+        printf("\n");
+    }
+    return 0;
+}
+
 static int cmd_learn(int pad)
 {
     int i;
@@ -562,6 +691,7 @@ static void usage(void)
       "  risergamepad presets                      list presets\n"
       "  risergamepad watch <1|2>                  show live USB button state\n"
       "  risergamepad raw                          show raw HID report bytes\n"
+      "  risergamepad learn-raw                    discover which raw bytes a pad uses\n"
       "  risergamepad learn <1|2>                  interactive button learning\n"
       "  risergamepad <1|2> <button> <source>      set one slot\n"
       "  risergamepad <1|2> reset                  factory defaults\n"
@@ -597,6 +727,10 @@ int main(int argc, char *argv[])
 
     if (argc == 2 && strcmp(argv[1], "raw") == 0) {
         return cmd_raw();
+    }
+
+    if (argc == 2 && strcmp(argv[1], "learn-raw") == 0) {
+        return cmd_learn_raw();
     }
 
     if (argc == 3 &&
