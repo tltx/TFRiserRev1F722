@@ -202,10 +202,13 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 
 	  	  case IFACE_READHID:
 	  	  {
+	  		USBH_StatusTypeDef ghd_status;
 	  		iface_num = phost->device.CfgDesc.Itf_Desc[phost->pActiveClass->iface_initnum].bInterfaceNumber;
 	  		USBH_SelectInterface(phost, iface_num);
 
-	  	  if (USBH_HID_GetHIDDescriptor (phost, USB_HID_DESC_SIZE,phost->pActiveClass->iface_initnum)== USBH_OK)
+	  		ghd_status = USBH_HID_GetHIDDescriptor(phost, USB_HID_DESC_SIZE,
+	  		                                      phost->pActiveClass->iface_initnum);
+	  		if (ghd_status == USBH_OK)
 	  	    {
 	  		    HID_Handle = phost->pActiveClass->pData[phost->pActiveClass->iface_initnum];
 	  		    HID_Handle->state     = HID_INIT;
@@ -218,33 +221,48 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  	      phost->pActiveClass->iface_init = IFACE_READHIDRPTDESC;
 
 	  	    }
-	  	    else
+	  	    else if (ghd_status != USBH_BUSY)
 	  	    {
-	  		  /* VID:PID quirks for devices that don't (or won't) return a
-	  		   * HID descriptor on request -- e.g. XBOX360 controllers,
+	  		  /* Definitive failure (USBH_FAIL / USBH_NOT_SUPPORTED) --
+	  		   * device refused the HID descriptor request.  USBH_BUSY
+	  		   * must NOT take this path: it means the control transfer
+	  		   * is still in flight and we have to keep polling.
+	  		   * Forcing state changes on BUSY corrupts the ongoing
+	  		   * transfer and brings the whole stack down (observed
+	  		   * with the Logitech Unifying Receiver and standard mice).
+	  		   *
+	  		   * VID:PID quirks for devices that don't (or won't) return
+	  		   * a HID descriptor on request -- e.g. XBOX360 controllers,
 	  		   * various PSX-to-USB adapters, cheap third-party pads.
 	  		   * Set up minimal handle state from the endpoint descriptor
 	  		   * (which IS readable) and force JOYSTICK classification so
 	  		   * the gamepad init path runs and reports start flowing. */
 	  		  uint16_t vid = phost->device.DevDesc.idVendor;
 	  		  uint16_t pid = phost->device.DevDesc.idProduct;
-	  		  if ((vid == 0x6666 && pid == 0x0667)
-	  		      || (vid == 0x289B && pid == 0x0080)) {
-	  			  /* WiseGroup SmartJoy PSX -> USB     (6666:0667)
-	  			   * raphnet WUSBMote v2.2             (289B:0080)
-	  			   * Neither serves a standalone HID descriptor request. */
+	  		  USBH_InterfaceDescTypeDef *bf_itf =
+	  		      &phost->device.CfgDesc.Itf_Desc[phost->device.current_interface];
+	  		  int is_boot_hid = (bf_itf->bInterfaceClass == 0x03U
+	  		                     && bf_itf->bInterfaceSubClass == 0x01U
+	  		                     && (bf_itf->bInterfaceProtocol == HID_KEYBRD_BOOT_CODE
+	  		                         || bf_itf->bInterfaceProtocol == HID_MOUSE_BOOT_CODE));
+	  		  int is_vendor_quirk = ((vid == 0x6666 && pid == 0x0667)
+	  		                         || (vid == 0x289B && pid == 0x0080));
+
+	  		  if (is_boot_hid || is_vendor_quirk) {
+	  			  /* Synthesise the handle state from the endpoint descriptor
+	  			   * (which IS readable in the cfg descriptor) and let
+	  			   * IFACE_INITSUBCLASS classify -- its boot-protocol check
+	  			   * handles boot mice/keyboards, and the JOYSTICK type
+	  			   * preset here covers the vendor adapters. */
 	  			  HID_Handle = phost->pActiveClass->pData[phost->pActiveClass->iface_initnum];
 	  			  HID_Handle->state     = HID_INIT;
 	  			  HID_Handle->ctl_state = HID_REQ_INIT;
-	  			  HID_Handle->ep_addr   = phost->device.CfgDesc.Itf_Desc[phost->device.current_interface].Ep_Desc[0].bEndpointAddress;
-	  			  HID_Handle->length    = phost->device.CfgDesc.Itf_Desc[phost->device.current_interface].Ep_Desc[0].wMaxPacketSize;
-	  			  HID_Handle->poll      = phost->device.CfgDesc.Itf_Desc[phost->device.current_interface].Ep_Desc[0].bInterval;
-	  			  HID_Handle->HID_Desc.RptDesc.type = REPORT_TYPE_JOYSTICK;
-	  			  /* Skip the report-descriptor read since the device won't
-	  			   * answer it.  Jump straight to subclass init -- the report
-	  			   * descriptor's normal output (axis offsets / button map)
-	  			   * isn't usable for this device anyway; the Amiga-side tool
-	  			   * uses raw_report bytes for mapping. */
+	  			  HID_Handle->ep_addr   = bf_itf->Ep_Desc[0].bEndpointAddress;
+	  			  HID_Handle->length    = bf_itf->Ep_Desc[0].wMaxPacketSize;
+	  			  HID_Handle->poll      = bf_itf->Ep_Desc[0].bInterval;
+	  			  if (is_vendor_quirk) {
+	  				  HID_Handle->HID_Desc.RptDesc.type = REPORT_TYPE_JOYSTICK;
+	  			  }
 	  			  phost->pActiveClass->iface_init = IFACE_INITSUBCLASS;
 	  		  } else if (phost->pActiveClass->iface_initnum > 0) {
 	  			  /* Composite device: a later interface refuses its HID
@@ -256,6 +274,7 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  			  phost->pActiveClass->iface_init = IFACE_SELECTIFACE;
 	  		  }
 	  	    }
+	  	    /* else: USBH_BUSY -- retry next tick, leave iface_init unchanged. */
 
 
 
@@ -265,22 +284,28 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 
 	  	case IFACE_READHIDRPTDESC:
 	  		  	  {
+	  		  		USBH_StatusTypeDef grpt_status;
 	  		  		HID_Handle = phost->pActiveClass->pData[phost->pActiveClass->iface_initnum];
 	  		  		iface_num = phost->device.CfgDesc.Itf_Desc[phost->pActiveClass->iface_initnum].bInterfaceNumber;
 	  		  		USBH_SelectInterface(phost, iface_num);
 
-	  		  	  if (USBH_HID_GetHIDReportDescriptor(phost, HID_Handle->HID_Desc.wItemLength,phost->pActiveClass->iface_initnum)== USBH_OK)
+	  		  		grpt_status = USBH_HID_GetHIDReportDescriptor(phost,
+	  		  		                  HID_Handle->HID_Desc.wItemLength,
+	  		  		                  phost->pActiveClass->iface_initnum);
+	  		  		if (grpt_status == USBH_OK)
 	  		  	    {
 
 	  		  		   parse_report_descriptor(phost->device.Data, HID_Handle->HID_Desc.wItemLength,&(HID_Handle->HID_Desc.RptDesc));
 
 	  		  		   phost->pActiveClass->iface_init = IFACE_INITSUBCLASS;
 	  		  	    }
-	  		  	    else if (phost->pActiveClass->iface_initnum > 0)
+	  		  	    else if (grpt_status != USBH_BUSY
+	  		  	             && phost->pActiveClass->iface_initnum > 0)
 	  		  	    {
 	  		  		   /* Same fallback as in IFACE_READHID: a later interface
 	  		  		    * refused its report descriptor.  Skip ahead so the
-	  		  		    * earlier (working) interface can be used. */
+	  		  		    * earlier (working) interface can be used.  USBH_BUSY
+	  		  		    * is the in-flight state -- never advance on it. */
 	  		  		   phost->pActiveClass->iface_init = IFACE_SELECTIFACE;
 	  		  	    }
 	  		  	  }
@@ -434,8 +459,15 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  		  	    //Check if we have any other interfaces to phost->device.CfgDesc.bNumInterfaces
 	  		  		if (++phost->pActiveClass->iface_initnum<phost->device.CfgDesc.bNumInterfaces)
 	  		  		{
-	  		  		   //Have we reached maximum of interfaces? USBH_MAX_NUM_INTERFACES
-	  		  		   if (phost->pActiveClass->iface_initnum<=USBH_MAX_NUM_INTERFACES)
+	  		  		   /* USBH_MAX_NUM_INTERFACES is the SIZE of pData[] /
+	  		  		    * Itf_Desc[] arrays, so the highest valid index is
+	  		  		    * USBH_MAX_NUM_INTERFACES - 1.  Original code used
+	  		  		    * `<= USBH_MAX_NUM_INTERFACES` which let iface_initnum
+	  		  		    * reach the size value itself and triggered out-of-
+	  		  		    * bounds access to pData[] / Itf_Desc[] for any
+	  		  		    * 3+ interface device (e.g. Logitech Unifying
+	  		  		    * Receiver). */
+	  		  		   if (phost->pActiveClass->iface_initnum<USBH_MAX_NUM_INTERFACES)
 	  		  		   {
 	  		  			phost->pActiveClass->iface_init = IFACE_READHID;
 	  		  		   }
@@ -546,21 +578,41 @@ static USBH_StatusTypeDef USBH_HID_ClassRequest(USBH_HandleTypeDef *phost)
 
     /* set Idle.  Advance on any non-BUSY result.  USBH_FAIL gets the
      * same treatment as USBH_NOT_SUPPORTED here -- some cheap devices
-     * STALL SET_IDLE rather than declining it cleanly, and previously
-     * that left ctl_state pinned and hung class init forever. */
-    if (classReqStatus != USBH_BUSY)
+     * STALL SET_IDLE rather than declining it cleanly.
+     *
+     * Some devices (e.g. Logitech Unifying Receiver) NAK SET_IDLE
+     * indefinitely.  NAK doesn't trip the host's error counter so
+     * the existing USBH_FAIL tolerance never kicks in and ClassRequest
+     * spins forever in HOST_CLASS_REQUEST.  Count consecutive BUSY
+     * returns per host and force-advance after a threshold. */
     {
-      HID_Handle->ctl_state = HID_REQ_SET_PROTOCOL;
+      /* phost->id is HOST_HS (0) or HOST_FS (1). */
+      static uint16_t set_idle_busy_count[2] = {0, 0};
+      if (classReqStatus != USBH_BUSY) {
+        HID_Handle->ctl_state = HID_REQ_SET_PROTOCOL;
+        set_idle_busy_count[phost->id & 1] = 0;
+      } else if (++set_idle_busy_count[phost->id & 1] > 2000U) {
+        /* ~2 seconds of NAK-only.  Skip SET_IDLE. */
+        HID_Handle->ctl_state = HID_REQ_SET_PROTOCOL;
+        set_idle_busy_count[phost->id & 1] = 0;
+      }
     }
     break;
 
   case HID_REQ_SET_PROTOCOL:
-    /* set protocol -- same tolerance as SET_IDLE above. */
+    /* set protocol -- same tolerance and NAK-timeout as SET_IDLE. */
     classReqStatus = USBH_HID_SetProtocol(phost, 0U);
-    if (classReqStatus != USBH_BUSY)
     {
-      HID_Handle->ctl_state = HID_REQ_IDLE;
-      status = USBH_OK;
+      static uint16_t set_proto_busy_count[2] = {0, 0};
+      if (classReqStatus != USBH_BUSY) {
+        HID_Handle->ctl_state = HID_REQ_IDLE;
+        status = USBH_OK;
+        set_proto_busy_count[phost->id & 1] = 0;
+      } else if (++set_proto_busy_count[phost->id & 1] > 2000U) {
+        HID_Handle->ctl_state = HID_REQ_IDLE;
+        status = USBH_OK;
+        set_proto_busy_count[phost->id & 1] = 0;
+      }
     }
     break;
 
@@ -586,7 +638,16 @@ static USBH_StatusTypeDef USBH_HID_Process(USBH_HandleTypeDef *phost)
 	  switch (HID_Handle->state)
 	  {
 	  case HID_INIT:
-	    HID_Handle->Init(phost);
+	    /* Some multi-interface composite devices (e.g. Logitech Unifying
+	     * Receiver, interface 2 = HID++ vendor) don't match any of the
+	     * KEYBOARD / MOUSE / JOYSTICK type checks in IFACE_INITSUBCLASS,
+	     * leaving HID_Handle->Init NULL.  Calling a NULL function pointer
+	     * here corrupts the stack and brings down the whole USB host
+	     * after a while.  Skip such interfaces -- they have no consumer
+	     * and we don't need their reports. */
+	    if (HID_Handle->Init != NULL) {
+	      HID_Handle->Init(phost);
+	    }
 	    HID_Handle->state = HID_SYNC;
 	    phost->pUser(phost, HOST_USER_CLASS_ACTIVE);
 	    break;

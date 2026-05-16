@@ -96,34 +96,26 @@ if (HSReady==1)
 		 * read for $14 can catch, making the Amiga see a phantom empty port. */
 		uint8_t new_hs_type = USB_DEV_NONE;
 
-		  switch(HID_Handle1->HID_Desc.RptDesc.type)
-		  {
-		  	  case REPORT_TYPE_KEYBOARD:
-			  {
-		  		usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostHS);
-		  		usbDev.keyboardusbhost = &hUsbHostHS;
-		  		new_hs_type = USB_DEV_KEYBOARD;
-			  }
-			  break;
-
-		  	  case REPORT_TYPE_MOUSE:
-		  	  {
-		  		usbDev.mouse= USBH_HID_GetMouseInfo(&hUsbHostHS);
-		  		usbDev.mouseDetected = 1;
-		  		usbDev.overridePorts = 1;
-		  		new_hs_type = USB_DEV_MOUSE;
-		  	  }
-		  	 break;
-
-		  	 case REPORT_TYPE_JOYSTICK:
-		      {
-		    	  usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
-		    	  usbDev.overridePorts = 1;
-		    	  new_hs_type = USB_DEV_GAMEPAD;
-
-		  	   }
-		      break;
-
+		  /* Classify by the Init function pointer (set by IFACE_INITSUBCLASS
+		   * based on either boot-protocol class/subclass/protocol OR
+		   * RptDesc.type, whichever matched).  Using Init catches boot-mode
+		   * keyboards/mice even when the report-descriptor parser couldn't
+		   * classify them -- needed for e.g. the Logitech Unifying Receiver
+		   * whose 148-byte mouse descriptor this parser doesn't fully
+		   * decode. */
+		  if (HID_Handle1->Init == USBH_HID_KeybdInit) {
+			usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostHS);
+			usbDev.keyboardusbhost = &hUsbHostHS;
+			new_hs_type = USB_DEV_KEYBOARD;
+		  } else if (HID_Handle1->Init == USBH_HID_MouseInit) {
+			usbDev.mouse = USBH_HID_GetMouseInfo(&hUsbHostHS);
+			usbDev.mouseDetected = 1;
+			usbDev.overridePorts = 1;
+			new_hs_type = USB_DEV_MOUSE;
+		  } else if (HID_Handle1->Init == USBH_HID_GamepadInit) {
+			usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
+			usbDev.overridePorts = 1;
+			new_hs_type = USB_DEV_GAMEPAD;
 		  }
 
 
@@ -135,35 +127,21 @@ if (HSReady==1)
 		HID_Handle2 = hUsbHostHS.pActiveClass->pData[1];
 		USBH_SelectInterface(&hUsbHostHS, 1);
 
-		 switch(HID_Handle2->HID_Desc.RptDesc.type)
-		{
-			case REPORT_TYPE_KEYBOARD:
-			{
-				usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostHS);
-				usbDev.keyboardusbhost = &hUsbHostHS;
-				if (new_hs_type == USB_DEV_NONE)
-					new_hs_type = USB_DEV_KEYBOARD;
-			}
-			break;
-
-			case REPORT_TYPE_MOUSE:
-			{
-				usbDev.mouse= USBH_HID_GetMouseInfo(&hUsbHostHS);
-				usbDev.mouseDetected = 1;
-				usbDev.overridePorts = 1;
-				if (new_hs_type != USB_DEV_GAMEPAD)
-					new_hs_type = USB_DEV_MOUSE;
-			}
-			break;
-
-			case REPORT_TYPE_JOYSTICK:
-			{
-				usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
-				usbDev.overridePorts = 1;
-				new_hs_type = USB_DEV_GAMEPAD;
-			}
-			break;
-
+		if (HID_Handle2->Init == USBH_HID_KeybdInit) {
+			usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostHS);
+			usbDev.keyboardusbhost = &hUsbHostHS;
+			if (new_hs_type == USB_DEV_NONE)
+				new_hs_type = USB_DEV_KEYBOARD;
+		} else if (HID_Handle2->Init == USBH_HID_MouseInit) {
+			usbDev.mouse = USBH_HID_GetMouseInfo(&hUsbHostHS);
+			usbDev.mouseDetected = 1;
+			usbDev.overridePorts = 1;
+			if (new_hs_type != USB_DEV_GAMEPAD)
+				new_hs_type = USB_DEV_MOUSE;
+		} else if (HID_Handle2->Init == USBH_HID_GamepadInit) {
+			usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
+			usbDev.overridePorts = 1;
+			new_hs_type = USB_DEV_GAMEPAD;
 		}
 		 USBH_SelectInterface(&hUsbHostHS, currentInterfaceHS);
 	}
@@ -190,33 +168,20 @@ if (FSReady==1)
 
 		uint8_t new_fs_type = USB_DEV_NONE;
 
-		  switch(HID_Handle1->HID_Desc.RptDesc.type)
-		  {
-		  	  case REPORT_TYPE_KEYBOARD:
-			  {
-		  		usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostFS);
-		  		usbDev.keyboardusbhost = &hUsbHostFS;
-		  		new_fs_type = USB_DEV_KEYBOARD;
-			  }
-			  break;
-
-		  	  case REPORT_TYPE_MOUSE:
-		  	  {
-		  		usbDev.mouse= USBH_HID_GetMouseInfo(&hUsbHostFS);
-		  		usbDev.mouseDetected = 1;
-		  		usbDev.overridePorts = 1;
-		  		new_fs_type = USB_DEV_MOUSE;
-		  	  }
-		  	 break;
-
-		  	 case REPORT_TYPE_JOYSTICK:
-		      {
-		    	  usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
-		    	  usbDev.overridePorts = 1;
-		    	  new_fs_type = USB_DEV_GAMEPAD;
-		  	   }
-		      break;
-
+		  /* Same classify-by-Init-pointer pattern as the HS block above. */
+		  if (HID_Handle1->Init == USBH_HID_KeybdInit) {
+			usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostFS);
+			usbDev.keyboardusbhost = &hUsbHostFS;
+			new_fs_type = USB_DEV_KEYBOARD;
+		  } else if (HID_Handle1->Init == USBH_HID_MouseInit) {
+			usbDev.mouse = USBH_HID_GetMouseInfo(&hUsbHostFS);
+			usbDev.mouseDetected = 1;
+			usbDev.overridePorts = 1;
+			new_fs_type = USB_DEV_MOUSE;
+		  } else if (HID_Handle1->Init == USBH_HID_GamepadInit) {
+			usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
+			usbDev.overridePorts = 1;
+			new_fs_type = USB_DEV_GAMEPAD;
 		  }
 
 
@@ -226,35 +191,21 @@ if (FSReady==1)
 		HID_Handle2 = hUsbHostFS.pActiveClass->pData[1];
 		USBH_SelectInterface(&hUsbHostFS, 1);
 
-		 switch(HID_Handle2->HID_Desc.RptDesc.type)
-		{
-			case REPORT_TYPE_KEYBOARD:
-			{
-				usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostFS);
-				usbDev.keyboardusbhost = &hUsbHostFS;
-				if (new_fs_type == USB_DEV_NONE)
-					new_fs_type = USB_DEV_KEYBOARD;
-			}
-			break;
-
-			case REPORT_TYPE_MOUSE:
-			{
-				usbDev.mouse= USBH_HID_GetMouseInfo(&hUsbHostFS);
-				usbDev.mouseDetected = 1;
-				usbDev.overridePorts = 1;
-				if (new_fs_type != USB_DEV_GAMEPAD)
-					new_fs_type = USB_DEV_MOUSE;
-			}
-			break;
-
-			case REPORT_TYPE_JOYSTICK:
-			{
-				usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
-				usbDev.overridePorts = 1;
-				new_fs_type = USB_DEV_GAMEPAD;
-			}
-			break;
-
+		if (HID_Handle2->Init == USBH_HID_KeybdInit) {
+			usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostFS);
+			usbDev.keyboardusbhost = &hUsbHostFS;
+			if (new_fs_type == USB_DEV_NONE)
+				new_fs_type = USB_DEV_KEYBOARD;
+		} else if (HID_Handle2->Init == USBH_HID_MouseInit) {
+			usbDev.mouse = USBH_HID_GetMouseInfo(&hUsbHostFS);
+			usbDev.mouseDetected = 1;
+			usbDev.overridePorts = 1;
+			if (new_fs_type != USB_DEV_GAMEPAD)
+				new_fs_type = USB_DEV_MOUSE;
+		} else if (HID_Handle2->Init == USBH_HID_GamepadInit) {
+			usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
+			usbDev.overridePorts = 1;
+			new_fs_type = USB_DEV_GAMEPAD;
 		}
 		 USBH_SelectInterface(&hUsbHostFS, currentInterfaceFS);
 

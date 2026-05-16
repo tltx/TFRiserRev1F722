@@ -911,6 +911,51 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 					WriteData((uint8_t)(hUsbHostFS.gState & 0x7F)
 						| ((hUsbHostFS.device.is_connected & 1) << 7));
 				}
+				/* HID class request sub-state (ctl_state) for diagnosing
+				 * stuck HOST_CLASS_REQUEST states.  Reads interface 0's
+				 * HID_Handle->ctl_state.  Values:
+				 *   0=INIT  1=IDLE  2=GET_REPORT_DESC  3=GET_HID_DESC
+				 *   4=SET_IDLE  5=SET_PROTOCOL  6=SET_REPORT */
+				else if (address == 0x36) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					uint8_t v = 0xFF;
+					if (hUsbHostHS.pActiveClass && hUsbHostHS.pActiveClass->pData[0]) {
+						HID_HandleTypeDef *h =
+							(HID_HandleTypeDef *)hUsbHostHS.pActiveClass->pData[0];
+						v = (uint8_t)h->ctl_state;
+					}
+					WriteData(v);
+				} else if (address == 0x37) {
+					extern USBH_HandleTypeDef hUsbHostFS;
+					uint8_t v = 0xFF;
+					if (hUsbHostFS.pActiveClass && hUsbHostFS.pActiveClass->pData[0]) {
+						HID_HandleTypeDef *h =
+							(HID_HandleTypeDef *)hUsbHostFS.pActiveClass->pData[0];
+						v = (uint8_t)h->ctl_state;
+					}
+					WriteData(v);
+				}
+				/* Live mouse_info diagnostics: lets the user see whether
+				 * the USB host is actually decoding mouse reports at all.
+				 * If holding the trackpad steady shows non-changing values
+				 * but moving it doesn't change them either, the dongle
+				 * isn't forwarding mouse data to the boot interface. */
+				else if (address == 0x38) {
+					WriteData(usb && usb->mouse ? (uint8_t)usb->mouse->x : 0);
+				} else if (address == 0x39) {
+					WriteData(usb && usb->mouse ? (uint8_t)usb->mouse->y : 0);
+				} else if (address == 0x3A) {
+					if (usb && usb->mouse) {
+						uint8_t v = 0;
+						if (usb->mouse->buttons[0]) v |= 0x01;
+						if (usb->mouse->buttons[1]) v |= 0x02;
+						if (usb->mouse->buttons[2]) v |= 0x04;
+						v |= (usb->mouse != NULL) << 7;   /* mouse pointer non-NULL */
+						WriteData(v);
+					} else {
+						WriteData(0);
+					}
+				}
 				/* EnumState (current USB enumeration sub-step) for diagnosing
 				 * where enumeration hangs.
 				 * 0=IDLE 1=GET_FULL_DEV_DESC 2=SET_ADDR 3=GET_CFG_DESC

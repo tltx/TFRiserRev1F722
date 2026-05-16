@@ -239,10 +239,30 @@ static void show_ports(void)
     const char *fsen = (fs_enum < 8) ? enames[fs_enum] : "?";
     const char *hsif = (hs_iface < 6) ? inames[hs_iface] : "?";
     const char *fsif = (fs_iface < 6) ? inames[fs_iface] : "?";
+    unsigned char hs_ctl = riser[0x36];
+    unsigned char fs_ctl = riser[0x37];
+    static const char *ctlnames[] = {
+        "INIT","IDLE","GET_REPORT_DESC","GET_HID_DESC",
+        "SET_IDLE","SET_PROTOCOL","SET_REPORT"
+    };
+    const char *hsct = (hs_ctl < 7) ? ctlnames[hs_ctl] : "?";
+    const char *fsct = (fs_ctl < 7) ? ctlnames[fs_ctl] : "?";
     printf("  HS host: gState=%-12s  conn=%d  EnumState=%s  iface=%s/i%u\n",
            gstate_name(hs), (hs & 0x80) ? 1 : 0, hsen, hsif, (unsigned)hs_inum);
+    printf("    HID class request ctl_state for interface 0: %s\n", hsct);
     printf("  FS host: gState=%-12s  conn=%d  EnumState=%s  iface=%s/i%u\n",
            gstate_name(fs), (fs & 0x80) ? 1 : 0, fsen, fsif, (unsigned)fs_inum);
+    printf("    HID class request ctl_state for interface 0: %s\n", fsct);
+
+    unsigned char mx = riser[0x38];
+    unsigned char my = riser[0x39];
+    unsigned char mb = riser[0x3A];
+    printf("  mouse: dx=%d dy=%d  btn=%c%c%c  alive=%c\n",
+           (signed char)mx, (signed char)my,
+           (mb & 1) ? 'L' : '-',
+           (mb & 2) ? 'R' : '-',
+           (mb & 4) ? 'M' : '-',
+           (mb & 0x80) ? 'y' : 'n');
 }
 
 static void show(int pad)
