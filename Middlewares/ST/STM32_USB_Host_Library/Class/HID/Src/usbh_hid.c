@@ -285,17 +285,34 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  	case IFACE_READHIDRPTDESC:
 	  		  	  {
 	  		  		USBH_StatusTypeDef grpt_status;
+	  		  		uint16_t rpt_len;
 	  		  		HID_Handle = phost->pActiveClass->pData[phost->pActiveClass->iface_initnum];
 	  		  		iface_num = phost->device.CfgDesc.Itf_Desc[phost->pActiveClass->iface_initnum].bInterfaceNumber;
 	  		  		USBH_SelectInterface(phost, iface_num);
 
+	  		  		/* Cap report-descriptor length to the actual size of the
+	  		  		 * device.Data buffer.  Some non-HID devices (notably XInput
+	  		  		 * pads -- Xbox 360 wired, 8BitDo XInput-mode) answer
+	  		  		 * GetHIDDescriptor with a 17-byte XInput-specific blob that
+	  		  		 * shares DescriptorType 0x21 with HID, so ParseHIDDesc
+	  		  		 * happily decodes a bogus wItemLength (often 788) out of
+	  		  		 * XInput-specific bytes.  Without the cap, the next
+	  		  		 * GetHIDReportDescriptor would write 788 bytes into
+	  		  		 * Data[USBH_MAX_DATA_BUFFER=512] and overflow into the
+	  		  		 * adjacent is_connected / DevDesc / CfgDesc.Itf_Desc[]
+	  		  		 * fields -- the device would appear to disconnect or get
+	  		  		 * misclassified. */
+	  		  		rpt_len = HID_Handle->HID_Desc.wItemLength;
+	  		  		if (rpt_len > USBH_MAX_DATA_BUFFER) {
+	  		  		   rpt_len = USBH_MAX_DATA_BUFFER;
+	  		  		}
 	  		  		grpt_status = USBH_HID_GetHIDReportDescriptor(phost,
-	  		  		                  HID_Handle->HID_Desc.wItemLength,
+	  		  		                  rpt_len,
 	  		  		                  phost->pActiveClass->iface_initnum);
 	  		  		if (grpt_status == USBH_OK)
 	  		  	    {
 
-	  		  		   parse_report_descriptor(phost->device.Data, HID_Handle->HID_Desc.wItemLength,&(HID_Handle->HID_Desc.RptDesc));
+	  		  		   parse_report_descriptor(phost->device.Data, rpt_len, &(HID_Handle->HID_Desc.RptDesc));
 
 	  		  		   phost->pActiveClass->iface_init = IFACE_INITSUBCLASS;
 	  		  	    }
