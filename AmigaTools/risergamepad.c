@@ -212,21 +212,23 @@ static const char *gstate_name(unsigned char s)
 
 static void show_ports(void)
 {
+    /* Formatted for a 77-column maximised AmigaShell window: each
+     * line stays <= 77 chars even when every field hits its longest
+     * label (e.g. "GET_FULL_CFG_DESC", "READHIDRPTDESC"). */
     unsigned char p1 = riser[PAD1_PORT_TYPE];
     unsigned char p2 = riser[PAD2_PORT_TYPE];
     unsigned char sentinel = riser[SENTINEL_REG];
     unsigned char hs = riser[0x34];   /* gState moved off $1C to avoid */
     unsigned char fs = riser[0x35];   /* shadowing the raw window $18..$1F */
-    printf("USB ports:\n");
-    printf("  Pad 1 port (HS): %s   [$14=%02X]\n", port_name(p1), p1);
-    printf("  Pad 2 port (FS): %s   [$15=%02X]\n", port_name(p2), p2);
-    printf("  bus-read sentinel: $16=%02X (expect A5)\n", sentinel);
     unsigned char hs_enum = riser[0x07];
     unsigned char fs_enum = riser[0x05];
     unsigned char hs_iface = riser[0x02];
     unsigned char fs_iface = riser[0x00];
     unsigned char hs_inum = riser[0x04];
     unsigned char fs_inum = riser[0x03];
+    unsigned char hs_ctl = riser[0x36];
+    unsigned char fs_ctl = riser[0x37];
+
     static const char *enames[] = {
         "IDLE","GET_FULL_DEV_DESC","SET_ADDR","GET_CFG_DESC",
         "GET_FULL_CFG_DESC","GET_MFC_STR","GET_PROD_STR","GET_SN_STR"
@@ -235,29 +237,38 @@ static void show_ports(void)
         "INIT","READHID","READHIDRPTDESC",
         "INITSUBCLASS","INITENDPNT","SELECTIFACE"
     };
-    const char *hsen = (hs_enum < 8) ? enames[hs_enum] : "?";
-    const char *fsen = (fs_enum < 8) ? enames[fs_enum] : "?";
-    const char *hsif = (hs_iface < 6) ? inames[hs_iface] : "?";
-    const char *fsif = (fs_iface < 6) ? inames[fs_iface] : "?";
-    unsigned char hs_ctl = riser[0x36];
-    unsigned char fs_ctl = riser[0x37];
     static const char *ctlnames[] = {
         "INIT","IDLE","GET_REPORT_DESC","GET_HID_DESC",
         "SET_IDLE","SET_PROTOCOL","SET_REPORT"
     };
+
+    const char *hsen = (hs_enum < 8) ? enames[hs_enum] : "?";
+    const char *fsen = (fs_enum < 8) ? enames[fs_enum] : "?";
+    const char *hsif = (hs_iface < 6) ? inames[hs_iface] : "?";
+    const char *fsif = (fs_iface < 6) ? inames[fs_iface] : "?";
     const char *hsct = (hs_ctl < 7) ? ctlnames[hs_ctl] : "?";
     const char *fsct = (fs_ctl < 7) ? ctlnames[fs_ctl] : "?";
-    printf("  HS host: gState=%-12s  conn=%d  EnumState=%s  iface=%s/i%u\n",
-           gstate_name(hs), (hs & 0x80) ? 1 : 0, hsen, hsif, (unsigned)hs_inum);
-    printf("    HID class request ctl_state for interface 0: %s\n", hsct);
-    printf("  FS host: gState=%-12s  conn=%d  EnumState=%s  iface=%s/i%u\n",
-           gstate_name(fs), (fs & 0x80) ? 1 : 0, fsen, fsif, (unsigned)fs_inum);
-    printf("    HID class request ctl_state for interface 0: %s\n", fsct);
 
     unsigned char mx = riser[0x38];
     unsigned char my = riser[0x39];
     unsigned char mb = riser[0x3A];
-    printf("  mouse: dx=%d dy=%d  btn=%c%c%c  alive=%c\n",
+
+    printf("USB ports:\n");
+    printf("  Pad 1 (HS): %-8s [$14=%02X]   Pad 2 (FS): %-8s [$15=%02X]\n",
+           port_name(p1), p1, port_name(p2), p2);
+    printf("  bus-read sentinel: $16=%02X (expect A5)\n", sentinel);
+    printf("\n");
+    printf("  HS  gState=%-13s conn=%d  enum=%s\n",
+           gstate_name(hs), (hs & 0x80) ? 1 : 0, hsen);
+    printf("      iface=%s/i%u  ctl=%s\n",
+           hsif, (unsigned)hs_inum, hsct);
+    printf("\n");
+    printf("  FS  gState=%-13s conn=%d  enum=%s\n",
+           gstate_name(fs), (fs & 0x80) ? 1 : 0, fsen);
+    printf("      iface=%s/i%u  ctl=%s\n",
+           fsif, (unsigned)fs_inum, fsct);
+    printf("\n");
+    printf("  mouse: dx=%4d dy=%4d  btn=%c%c%c  alive=%c\n",
            (signed char)mx, (signed char)my,
            (mb & 1) ? 'L' : '-',
            (mb & 2) ? 'R' : '-',
@@ -742,6 +753,27 @@ int main(int argc, char *argv[])
 
     if (argc == 2 && strcmp(argv[1], "ports") == 0) {
         show_ports();
+        return 0;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "watch-ports") == 0) {
+        /* Continuous show_ports polling -- press Return / Ctrl-C to
+         * stop.  Useful for catching transient USB states (e.g. a
+         * device re-enumerating to a different identity). */
+        BPTR cin = Input();
+        printf("Watching ports.  Press Return to stop.\n\n");
+        while (1) {
+            printf("\033[H\033[2J");   /* clear screen */
+            show_ports();
+            fflush(stdout);
+            if (WaitForChar(cin, 250000)) {   /* 250 ms */
+                char c = 0;
+                if (Read(cin, &c, 1) > 0) {
+                    if (c == '\n' || c == '\r' || c == 0x03) break;
+                }
+            }
+            if (CheckSignal(SIGBREAKF_CTRL_C)) break;
+        }
         return 0;
     }
 
