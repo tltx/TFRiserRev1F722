@@ -24,6 +24,7 @@
 #include "usb_host.h"
 #include "usbh_core.h"
 #include "usbh_hid.h"
+#include "gamepad_map.h"
 
 /* USER CODE BEGIN Includes */
 
@@ -74,6 +75,13 @@ static void USBH_UserProcess2(USBH_HandleTypeDef *phost, uint8_t id);
 
 void mapUSBDevices()
 {
+	/* Desired VID:PID per Amiga port slot.  Captured as each branch
+	 * assigns gamepadN, then reconciled with the persisted per-port
+	 * identity at the end so the right profile is auto-loaded when a
+	 * pad is plugged or swapped. */
+	uint16_t want_vid1 = 0U, want_pid1 = 0U;
+	uint16_t want_vid2 = 0U, want_pid2 = 0U;
+
 //process FS USB
 	// check if Device is Ready
 	// if it is ready
@@ -116,6 +124,8 @@ if (HSReady==1)
 			usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
 			usbDev.overridePorts = 1;
 			new_hs_type = USB_DEV_GAMEPAD;
+			want_vid1 = hUsbHostHS.device.DevDesc.idVendor;
+			want_pid1 = hUsbHostHS.device.DevDesc.idProduct;
 		  }
 
 
@@ -142,6 +152,8 @@ if (HSReady==1)
 			usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
 			usbDev.overridePorts = 1;
 			new_hs_type = USB_DEV_GAMEPAD;
+			want_vid2 = hUsbHostHS.device.DevDesc.idVendor;
+			want_pid2 = hUsbHostHS.device.DevDesc.idProduct;
 		}
 		 USBH_SelectInterface(&hUsbHostHS, currentInterfaceHS);
 	}
@@ -182,6 +194,8 @@ if (FSReady==1)
 			usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
 			usbDev.overridePorts = 1;
 			new_fs_type = USB_DEV_GAMEPAD;
+			want_vid2 = hUsbHostFS.device.DevDesc.idVendor;
+			want_pid2 = hUsbHostFS.device.DevDesc.idProduct;
 		  }
 
 
@@ -206,6 +220,8 @@ if (FSReady==1)
 			usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
 			usbDev.overridePorts = 1;
 			new_fs_type = USB_DEV_GAMEPAD;
+			want_vid1 = hUsbHostFS.device.DevDesc.idVendor;
+			want_pid1 = hUsbHostFS.device.DevDesc.idProduct;
 		}
 		 USBH_SelectInterface(&hUsbHostFS, currentInterfaceFS);
 
@@ -214,7 +230,19 @@ if (FSReady==1)
 	usbDev.fs_device_type = new_fs_type;   /* single atomic store */
 
 
-}}
+}
+
+	/* Reconcile per-port pad identity.  activate() copies the matching
+	 * stored profile (or the built-in default) into the active map only
+	 * when VID:PID changes -- so user edits in $20..$33 between scans
+	 * aren't clobbered. */
+	if (gamepad1_vid != want_vid1 || gamepad1_pid != want_pid1) {
+		gamepad_map_activate(1, want_vid1, want_pid1);
+	}
+	if (gamepad2_vid != want_vid2 || gamepad2_pid != want_pid2) {
+		gamepad_map_activate(2, want_vid2, want_pid2);
+	}
+}
 
 HID_USBDevicesTypeDef* USBH_HID_GetUSBDev()
 {

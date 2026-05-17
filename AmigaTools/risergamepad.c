@@ -253,6 +253,17 @@ static void show_ports(void)
     unsigned char my = riser[0x39];
     unsigned char mb = riser[0x3A];
 
+    /* Pad VID/PID exposed by the firmware (little-endian) -- mapping
+     * profiles are keyed by VID:PID internally so plugging the same
+     * physical pad into either jack recalls its profile.  Address
+     * cells are scattered because the Riser's external decoder only
+     * routes 6 bits and most cells in $00..$3F are already in use.
+     * Pad 2 PID is not exposed (firmware uses it for profile keying
+     * but it's omitted here to fit in the remaining cells). */
+    unsigned int p1_vid = (unsigned)riser[0x08] | ((unsigned)riser[0x09] << 8);
+    unsigned int p1_pid = (unsigned)riser[0x3B] | ((unsigned)riser[0x3C] << 8);
+    unsigned int p2_vid = (unsigned)riser[0x3D] | ((unsigned)riser[0x3E] << 8);
+
     printf("USB ports:\n");
     printf("  Pad 1 (HS): %-8s [$14=%02X]   Pad 2 (FS): %-8s [$15=%02X]\n",
            port_name(p1), p1, port_name(p2), p2);
@@ -267,6 +278,17 @@ static void show_ports(void)
            gstate_name(fs), (fs & 0x80) ? 1 : 0, fsen);
     printf("      iface=%s/i%u  ctl=%s\n",
            fsif, (unsigned)fs_inum, fsct);
+    printf("\n");
+    if (p1_vid) {
+        printf("  Pad-1 profile: VID:PID %04x:%04x\n", p1_vid, p1_pid);
+    } else {
+        printf("  Pad-1 profile: (no pad)\n");
+    }
+    if (p2_vid) {
+        printf("  Pad-2 profile: VID %04x\n", p2_vid);
+    } else {
+        printf("  Pad-2 profile: (no pad)\n");
+    }
     printf("\n");
     printf("  mouse: dx=%4d dy=%4d  btn=%c%c%c  alive=%c\n",
            (signed char)mx, (signed char)my,

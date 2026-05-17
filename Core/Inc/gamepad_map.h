@@ -32,11 +32,60 @@ typedef struct {
     uint8_t src[GAMEPAD_MAP_ENTRIES];
 } gamepad_map_t;
 
+/*
+ * Per-device profile.  Mappings are keyed by VID:PID so the same physical
+ * pad gets the same button layout regardless of which Riser USB jack it's
+ * in.  An "empty" slot has vid==0 (real devices always have a non-zero VID).
+ */
+#define GAMEPAD_PROFILE_SLOTS 4
+
+typedef struct {
+    uint16_t       vid;
+    uint16_t       pid;
+    gamepad_map_t  map;
+} gamepad_profile_t;
+
+/* Active in-RAM mappings used by the runtime button decoder. */
 extern gamepad_map_t gamepad1_map;
 extern gamepad_map_t gamepad2_map;
 
+/* Currently-active pad identity per port; 0/0 means "no pad" or
+ * "pad uses the in-RAM default and has no persistent profile". */
+extern uint16_t gamepad1_vid, gamepad1_pid;
+extern uint16_t gamepad2_vid, gamepad2_pid;
+
+/* Profile storage (mirror of RTC backup).  Slot 0 is MRU. */
+extern gamepad_profile_t gamepad_profiles[GAMEPAD_PROFILE_SLOTS];
+
+/*
+ * Load profiles from RTC backup at boot.  If magic doesn't match, reset
+ * to empty slots and load gamepad1/2_map with the built-in default.
+ */
 void gamepad_map_load(void);
-void gamepad_map_save(void);
+
+/*
+ * Activate a pad on the given Amiga slot (port 1 = HS, port 2 = FS).
+ * Looks up VID:PID in profile storage; if found, copies that profile's
+ * mapping into the active map.  If not found, copies the built-in
+ * default mapping -- no profile is created until the user actually
+ * edits a slot via gamepad_map_save_active().
+ *
+ * vid==0 / pid==0 means "no pad detected" -- the active map is left
+ * untouched and the per-port vid/pid trackers are cleared.
+ */
+void gamepad_map_activate(uint8_t port, uint16_t vid, uint16_t pid);
+
+/*
+ * Persist the currently-active map for the given port back to RTC
+ * backup.  If the port's pad already has a profile, that slot is
+ * updated.  If not (the pad was using the in-RAM default), a new
+ * profile slot is allocated -- MRU at slot 0, others shift down,
+ * oldest (slot 3) falls off.
+ *
+ * No-op if the port has no active pad (vid==0).  Called by the EXTI
+ * write handler whenever a mapping byte ($20..$33) is modified.
+ */
+void gamepad_map_save_active(uint8_t port);
 
 static inline uint16_t gp_combine(uint8_t data, uint8_t extra)
 {

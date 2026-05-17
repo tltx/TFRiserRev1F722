@@ -956,6 +956,32 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 						WriteData(0);
 					}
 				}
+				/* Active pad VID:PID per Amiga port -- lets risergamepad
+				 * confirm which physical pad is bound to each profile slot.
+				 * Tight squeeze: the Riser's external address decoder only
+				 * routes 6 bits, the obvious neighbour range $0A..$0F is
+				 * already in use (joy0dat / joy1dat reads), and we have to
+				 * thread the 8 desired bytes through the few unallocated
+				 * cells in $00..$3F.  Pad 1 gets full VID:PID; Pad 2 only
+				 * exposes VID (its PID is still used internally for profile
+				 * keying, just not visible to the Amiga tool).
+				 *   $08 = Pad-1 VID lo     $09 = Pad-1 VID hi
+				 *   $3B = Pad-1 PID lo     $3C = Pad-1 PID hi
+				 *   $3D = Pad-2 VID lo     $3E = Pad-2 VID hi
+				 * 0/0 means "no pad on this port". */
+				else if (address == 0x08) {
+					WriteData((uint8_t)gamepad1_vid);
+				} else if (address == 0x09) {
+					WriteData((uint8_t)(gamepad1_vid >> 8));
+				} else if (address == 0x3B) {
+					WriteData((uint8_t)gamepad1_pid);
+				} else if (address == 0x3C) {
+					WriteData((uint8_t)(gamepad1_pid >> 8));
+				} else if (address == 0x3D) {
+					WriteData((uint8_t)gamepad2_vid);
+				} else if (address == 0x3E) {
+					WriteData((uint8_t)(gamepad2_vid >> 8));
+				}
 				/* EnumState (current USB enumeration sub-step) for diagnosing
 				 * where enumeration hangs.
 				 * 0=IDLE 1=GET_FULL_DEV_DESC 2=SET_ADDR 3=GET_CFG_DESC
@@ -1076,16 +1102,18 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 
 		/* Gamepad map write: 0x20..0x29 = pad1[0..9], 0x2A..0x33 = pad2[0..9].
 		 * Value is a source-bit index 0..15, or 0xFF for "unmapped".
-		 * Side-effect: persists both maps to RTC backup registers. */
+		 * Side-effect: persists the affected port's profile (keyed by the
+		 * currently-active pad's VID:PID) to RTC backup. */
 		if (address >= 0x20 && address <= 0x33) {
 			uint8_t val = ReadData();
 			if (val < 16 || val == GAMEPAD_MAP_UNMAPPED) {
 				if (address <= 0x29) {
 					gamepad1_map.src[address - 0x20] = val;
+					gamepad_map_save_active(1);
 				} else {
 					gamepad2_map.src[address - 0x2A] = val;
+					gamepad_map_save_active(2);
 				}
-				gamepad_map_save();
 			}
 		}
 	}
