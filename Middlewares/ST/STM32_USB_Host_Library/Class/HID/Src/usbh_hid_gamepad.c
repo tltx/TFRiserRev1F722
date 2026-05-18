@@ -102,8 +102,11 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost);
 /** @defgroup USBH_HID_gamepad_Private_Variables
   * @{
   */
-HID_gamepad_Info_TypeDef    gamepad_info;
-static uint8_t* gamepad_report_data;
+/* One gamepad_info per USB host so two simultaneously-connected pads
+ * (one on HS, one on FS) keep independent state.  Indexed by
+ * phost->id (HOST_HS=0, HOST_FS=1).  Multi-interface gamepad devices
+ * on the same host still share -- not a real concern in practice. */
+HID_gamepad_Info_TypeDef    gamepad_info[2];
 
 //static uint8_t gamepad_info;
 
@@ -189,7 +192,6 @@ USBH_StatusTypeDef USBH_HID_GamepadInit(USBH_HandleTypeDef *phost)
 
 
   HID_Handle->pData = (uint8_t*) malloc (reportSize *sizeof(uint8_t)); //(uint8_t*)(void *)
-  gamepad_report_data = HID_Handle->pData;
   USBH_HID_FifoInit(&HID_Handle->fifo, phost->device.Data, HID_QUEUE_SIZE * reportSize);
 
   return USBH_OK;
@@ -205,12 +207,13 @@ HID_gamepad_Info_TypeDef *USBH_HID_GetGamepadInfo(USBH_HandleTypeDef *phost)
 {
 	/* Best-effort refresh from the FIFO; on failure (no new data this tick,
 	 * or short FIFO read) we keep the previously-decoded state.  Always
-	 * return the static gamepad_info so the caller can rely on the pointer
-	 * being stable while the gamepad is connected -- otherwise callers see
-	 * gamepad1/gamepad2 transiently NULL between USB reports, which makes
-	 * the live-state and raw-report registers permanently read as zero. */
+	 * return the per-host gamepad_info so the caller can rely on the
+	 * pointer being stable while the gamepad is connected -- otherwise
+	 * callers see gamepad1/gamepad2 transiently NULL between USB reports,
+	 * which makes the live-state and raw-report registers permanently
+	 * read as zero. */
 	(void)USBH_HID_GamepadDecode(phost);
-	return &gamepad_info;
+	return &gamepad_info[phost->id & 1U];
 }
 
 
@@ -224,6 +227,8 @@ HID_gamepad_Info_TypeDef *USBH_HID_GetGamepadInfo(USBH_HandleTypeDef *phost)
 static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 {
 	HID_HandleTypeDef *HID_Handle = (HID_HandleTypeDef *) phost->pActiveClass->pData[phost->device.current_interface];
+	HID_gamepad_Info_TypeDef *info = &gamepad_info[phost->id & 1U];
+	uint8_t *gamepad_report_data = HID_Handle->pData;
 
 	  if(HID_Handle->length == 0U)
 	  {
@@ -238,13 +243,13 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	   * the raw view stays at zero forever. */
 	  if (bytes_read > 0) {
 		uint16_t copy_len = bytes_read;
-		if (copy_len > sizeof(gamepad_info.raw_report))
-			copy_len = sizeof(gamepad_info.raw_report);
+		if (copy_len > sizeof(info->raw_report))
+			copy_len = sizeof(info->raw_report);
 		for (uint16_t i = 0; i < copy_len; i++)
-			gamepad_info.raw_report[i] = gamepad_report_data[i];
-		for (uint16_t i = copy_len; i < sizeof(gamepad_info.raw_report); i++)
-			gamepad_info.raw_report[i] = 0;
-		gamepad_info.raw_report_len = (uint8_t)copy_len;
+			info->raw_report[i] = gamepad_report_data[i];
+		for (uint16_t i = copy_len; i < sizeof(info->raw_report); i++)
+			info->raw_report[i] = 0;
+		info->raw_report_len = (uint8_t)copy_len;
 	  }
 
 	  if (bytes_read == HID_Handle->length)
@@ -314,8 +319,8 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 				if(a[1] > JOYSTICK_AXIS_TRIGGER_MAX) jmap |= JOY_DOWN;
 				jmap |= btn << JOY_BTN_SHIFT;      // add buttons
 
-				gamepad_info.gamepad_data = jmap;
-				gamepad_info.gamepad_extraBtn = btn_extra;
+				info->gamepad_data = jmap;
+				info->gamepad_extraBtn = btn_extra;
 	    }
 
 	  /* Per-device translators for gamepads whose HID descriptor the parser
@@ -331,7 +336,7 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	    uint16_t pid = phost->device.DevDesc.idProduct;
 
 	    if (vid == 0x289B && pid == 0x0080
-	        && gamepad_info.raw_report_len >= 15) {
+	        && info->raw_report_len >= 15) {
 	      /* raphnet WUSBMote v2.2 with SNES adapter.  Report bytes:
 	       *   byte 13 = SNES buttons bitmap (bit 0..7).  In the SNES
 	       *             firmware the WUSBMote ships with, interface 0
@@ -343,8 +348,8 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	       *             didn't capture it cleanly).
 	       *   bytes 9, 10, 11, 12, 15 also change with shoulder presses
 	       *     but the same information is already in byte 13. */
-	      uint8_t btns = gamepad_info.raw_report[13];
-	      uint8_t dpad = gamepad_info.raw_report[14];
+	      uint8_t btns = info->raw_report[13];
+	      uint8_t dpad = info->raw_report[14];
 
 	      /* D-pad bit-to-JOY_* mapping is empirically rotated from what
 	       * you'd expect: setting JOY_LEFT in gamepad_data results in
@@ -361,18 +366,18 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	       * tool (`risergamepad <pad> <slot> b<N>`) can then bind each
 	       * bit to whichever CD32 slot the user prefers. */
 	      d |= (btns & 0x0FU) << JOY_BTN_SHIFT;
-	      gamepad_info.gamepad_data = d;
-	      gamepad_info.gamepad_extraBtn = (btns >> 4) & 0x0FU;
+	      info->gamepad_data = d;
+	      info->gamepad_extraBtn = (btns >> 4) & 0x0FU;
 	    }
 	    else if (vid == 0x6666 && pid == 0x0667
-	        && gamepad_info.raw_report_len >= 3) {
+	        && info->raw_report_len >= 3) {
 	      /* WiseGroup SmartJoy PSX -> USB.  3-byte report:
 	       *   byte 0 = buttons: X=b0 A=b1 B=b2 Y=b3 Sel=b4 Start=b5 L=b6 R=b7
 	       *   byte 1 = X axis  (0x00 = left, 0x80 = center, 0xFF = right)
 	       *   byte 2 = Y axis  (0x00 = up,   0x80 = center, 0xFF = down)  */
-	      uint8_t btns = gamepad_info.raw_report[0];
-	      uint8_t xax  = gamepad_info.raw_report[1];
-	      uint8_t yax  = gamepad_info.raw_report[2];
+	      uint8_t btns = info->raw_report[0];
+	      uint8_t xax  = info->raw_report[1];
+	      uint8_t yax  = info->raw_report[2];
 
 	      uint8_t d = 0;
 	      if (xax < 0x40U) d |= JOY_LEFT;
@@ -382,8 +387,8 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	      /* Move PSX X/A/B/Y into the data byte's "USB buttons 0..3" slot */
 	      d |= (btns & 0x0FU) << JOY_BTN_SHIFT;
 	      /* Sel / Start / L / R go into extraBtn bits 0..3                */
-	      gamepad_info.gamepad_data = d;
-	      gamepad_info.gamepad_extraBtn = (btns >> 4) & 0x0FU;
+	      info->gamepad_data = d;
+	      info->gamepad_extraBtn = (btns >> 4) & 0x0FU;
 	    }
 	  }
 

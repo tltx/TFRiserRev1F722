@@ -73,18 +73,39 @@ static void USBH_UserProcess2(USBH_HandleTypeDef *phost, uint8_t id);
 
 //
 
+/* Collected gamepads found during a scan pass, in scan order.
+ * Slot 0 is assigned to usb->gamepad1 (drives joy1dat -- the dedicated
+ * joystick port), slot 1 to usb->gamepad2 (drives joy0dat -- the
+ * port shared with the Amiga mouse).  This ordering means a single
+ * USB pad always goes to the joystick port; the mouse-shared port is
+ * only consumed when a second pad is present. */
+typedef struct {
+	HID_gamepad_Info_TypeDef *info;
+	uint16_t vid;
+	uint16_t pid;
+} found_pad_t;
+
+static void try_collect_gamepad(USBH_HandleTypeDef *host,
+                                HID_HandleTypeDef *h,
+                                uint8_t iface_index,
+                                found_pad_t *out, int *n_found)
+{
+	if (h == NULL || h->Init != USBH_HID_GamepadInit) return;
+	if (*n_found >= 2) return;
+	USBH_SelectInterface(host, iface_index);
+	out[*n_found].info = USBH_HID_GetGamepadInfo(host);
+	out[*n_found].vid  = host->device.DevDesc.idVendor;
+	out[*n_found].pid  = host->device.DevDesc.idProduct;
+	(*n_found)++;
+}
+
 void mapUSBDevices()
 {
-	/* Desired VID:PID per Amiga port slot.  Captured as each branch
-	 * assigns gamepadN, then reconciled with the persisted per-port
-	 * identity at the end so the right profile is auto-loaded when a
-	 * pad is plugged or swapped. */
+	found_pad_t found[2] = { {0}, {0} };
+	int n_found = 0;
 	uint16_t want_vid1 = 0U, want_pid1 = 0U;
 	uint16_t want_vid2 = 0U, want_pid2 = 0U;
 
-//process FS USB
-	// check if Device is Ready
-	// if it is ready
 if (HSReady==1)
 {
 	HID_HandleTypeDef *HID_Handle1;
@@ -110,7 +131,9 @@ if (HSReady==1)
 		   * keyboards/mice even when the report-descriptor parser couldn't
 		   * classify them -- needed for e.g. the Logitech Unifying Receiver
 		   * whose 148-byte mouse descriptor this parser doesn't fully
-		   * decode. */
+		   * decode.  Gamepads are collected here and assigned to
+		   * usbDev.gamepadN at the end so the first one always lands on
+		   * the joystick port (slot 1) regardless of which USB jack. */
 		  if (HID_Handle1->Init == USBH_HID_KeybdInit) {
 			usbDev.keyboard = USBH_HID_GetKeybdInfo(&hUsbHostHS);
 			usbDev.keyboardusbhost = &hUsbHostHS;
@@ -121,11 +144,9 @@ if (HSReady==1)
 			usbDev.overridePorts = 1;
 			new_hs_type = USB_DEV_MOUSE;
 		  } else if (HID_Handle1->Init == USBH_HID_GamepadInit) {
-			usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
+			try_collect_gamepad(&hUsbHostHS, HID_Handle1, 0, found, &n_found);
 			usbDev.overridePorts = 1;
 			new_hs_type = USB_DEV_GAMEPAD;
-			want_vid1 = hUsbHostHS.device.DevDesc.idVendor;
-			want_pid1 = hUsbHostHS.device.DevDesc.idProduct;
 		  }
 
 
@@ -149,11 +170,9 @@ if (HSReady==1)
 			if (new_hs_type != USB_DEV_GAMEPAD)
 				new_hs_type = USB_DEV_MOUSE;
 		} else if (HID_Handle2->Init == USBH_HID_GamepadInit) {
-			usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostHS);
+			try_collect_gamepad(&hUsbHostHS, HID_Handle2, 1, found, &n_found);
 			usbDev.overridePorts = 1;
 			new_hs_type = USB_DEV_GAMEPAD;
-			want_vid2 = hUsbHostHS.device.DevDesc.idVendor;
-			want_pid2 = hUsbHostHS.device.DevDesc.idProduct;
 		}
 		 USBH_SelectInterface(&hUsbHostHS, currentInterfaceHS);
 	}
@@ -191,11 +210,9 @@ if (FSReady==1)
 			usbDev.overridePorts = 1;
 			new_fs_type = USB_DEV_MOUSE;
 		  } else if (HID_Handle1->Init == USBH_HID_GamepadInit) {
-			usbDev.gamepad2 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
+			try_collect_gamepad(&hUsbHostFS, HID_Handle1, 0, found, &n_found);
 			usbDev.overridePorts = 1;
 			new_fs_type = USB_DEV_GAMEPAD;
-			want_vid2 = hUsbHostFS.device.DevDesc.idVendor;
-			want_pid2 = hUsbHostFS.device.DevDesc.idProduct;
 		  }
 
 
@@ -217,11 +234,9 @@ if (FSReady==1)
 			if (new_fs_type != USB_DEV_GAMEPAD)
 				new_fs_type = USB_DEV_MOUSE;
 		} else if (HID_Handle2->Init == USBH_HID_GamepadInit) {
-			usbDev.gamepad1 = USBH_HID_GetGamepadInfo(&hUsbHostFS);
+			try_collect_gamepad(&hUsbHostFS, HID_Handle2, 1, found, &n_found);
 			usbDev.overridePorts = 1;
 			new_fs_type = USB_DEV_GAMEPAD;
-			want_vid1 = hUsbHostFS.device.DevDesc.idVendor;
-			want_pid1 = hUsbHostFS.device.DevDesc.idProduct;
 		}
 		 USBH_SelectInterface(&hUsbHostFS, currentInterfaceFS);
 
@@ -231,6 +246,17 @@ if (FSReady==1)
 
 
 }
+
+	/* Assign collected pads.  First found -> gamepad1 (joystick port,
+	 * joy1dat).  Second -> gamepad2 (mouse-shared port, joy0dat).
+	 * NULL when fewer pads are connected, so the main-loop NULL checks
+	 * (e.g. usb->gamepad2 != NULL) gate correctly. */
+	usbDev.gamepad1 = (n_found >= 1) ? found[0].info : NULL;
+	usbDev.gamepad2 = (n_found >= 2) ? found[1].info : NULL;
+	want_vid1 = (n_found >= 1) ? found[0].vid : 0U;
+	want_pid1 = (n_found >= 1) ? found[0].pid : 0U;
+	want_vid2 = (n_found >= 2) ? found[1].vid : 0U;
+	want_pid2 = (n_found >= 2) ? found[1].pid : 0U;
 
 	/* Reconcile per-port pad identity.  activate() copies the matching
 	 * stored profile (or the built-in default) into the active map only
