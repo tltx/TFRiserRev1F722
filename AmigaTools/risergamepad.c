@@ -102,35 +102,9 @@ static const char *slot_name[SLOTS] = {
 /* Slot/register helpers.                                              */
 /* ------------------------------------------------------------------ */
 
-static int find_slot(const char *s)
-{
-    int i;
-    for (i = 0; i < SLOTS; i++)
-        if (strcmp(s, slot_name[i]) == 0) return i;
-    return -1;
-}
-
 static unsigned char reg_addr(int pad, int slot)
 {
     return (unsigned char)((pad == 1 ? PAD1_REG_BASE : PAD2_REG_BASE) + slot);
-}
-
-/* Parse a source token: decimal 0..15, "bN" (N=0..11) for USB-button N,
- * "u"/"unmap" for unmapped. Returns 0..15 or 0xFF, or -1 on bad input. */
-static int parse_source(const char *s)
-{
-    if (!s || !*s) return -1;
-    if (strcmp(s, "u") == 0 || strcmp(s, "unmap") == 0) return UNMAPPED;
-    if ((s[0] == 'b' || s[0] == 'B') && s[1]) {
-        int n = atoi(s + 1);
-        if (n < 0 || n > 11) return -1;
-        return n + 4;   /* USB button N -> combined-word bit (N+4) */
-    }
-    {
-        int n = atoi(s);
-        if (n < 0 || n > 15) return -1;
-        return n;
-    }
 }
 
 static const char *describe_bit(int bit)
@@ -480,16 +454,28 @@ static int cmd_raw(void)
                     if ((i & 0xF) == 0xF && i + 1 < RAW_REPORT_TOTAL) printf("\n        ");
                 }
                 printf("\n");
+                /* Compact bit list, line-wrapped at ~72 chars.  Each
+                 * entry is "b<byte>.<bit>=raw<idx>" so the user can
+                 * read either the byte.bit position or the raw bit
+                 * index (which is what `risergamepad <slot> N` takes). */
                 printf("bits set:");
                 int any = 0;
+                int col = 9;             /* length of "bits set:" */
                 int byte;
                 for (byte = 0; byte < RAW_REPORT_TOTAL; byte++) {
                     int bit;
                     for (bit = 0; bit < 8; bit++) {
                         if (curr[byte] & (1u << bit)) {
                             int idx = byte * 8 + bit;
-                            printf("%s byte%d.bit%d(=raw%d)",
-                                   any ? "," : "", byte, bit, idx);
+                            char piece[16];
+                            int len = sprintf(piece, " b%d.%d=raw%d",
+                                              byte, bit, idx);
+                            if (col + len > 72) {
+                                printf("\n         ");
+                                col = 9;
+                            }
+                            printf("%s", piece);
+                            col += len;
                             any = 1;
                         }
                     }
@@ -752,31 +738,29 @@ static void usage(void)
 {
     printf(
       "Usage (pad number is optional; defaults to 1):\n"
-      "  risergamepad                              show current mapping\n"
+      "  risergamepad                              show ports + connected pad mappings\n"
       "  risergamepad ports                        show what's on each USB port\n"
       "  risergamepad watch-ports                  show ports live (250 ms refresh)\n"
+      "  risergamepad [1|2]                        show one pad's mapping\n"
       "  risergamepad watch [1|2]                  show live USB button state\n"
       "  risergamepad raw                          show raw HID report bytes\n"
       "  risergamepad learn-raw                    discover which raw bytes a pad uses\n"
-      "  risergamepad learn [1|2]                  interactive button learning\n"
-      "  risergamepad [1|2] <button> <source>      set one slot\n"
-      "  risergamepad [1|2] reset                  factory defaults\n"
-      "\n"
-      " button = fire1 fire2 fire3 play rw ff green yellow red blue\n"
-      " source = bN (USB button 0..11), 0..15 (raw bit), or 'u'/'unmap'\n"
-      "\n"
-      "Tip: run 'risergamepad watch' and press each button on your pad to\n"
-      "see which 'bN' label it has, or use 'risergamepad learn' to assign\n"
-      "every slot interactively.\n");
+      "  risergamepad learn [1|2]                  interactive button learning\n");
 }
 
 int main(int argc, char *argv[])
 {
     if (argc == 1) {
+        /* Default invocation: port summary + the mapping of each
+         * actually-connected pad.  Use `risergamepad 1` or
+         * `risergamepad 2` explicitly to see a slot's mapping even
+         * when no pad is plugged in. */
         show_ports();
-        printf("\n");
-        show(1);
-        show(2);
+        int p1_present = (riser[0x08] | riser[0x09]) != 0;
+        int p2_present = (riser[0x3D] | riser[0x3E]) != 0;
+        if (p1_present || p2_present) printf("\n");
+        if (p1_present) show(1);
+        if (p2_present) show(2);
         return 0;
     }
 
@@ -839,34 +823,8 @@ int main(int argc, char *argv[])
     if (remaining == 1 && strcmp(argv[argi], "learn") == 0) {
         return cmd_learn(pad);
     }
-    if (remaining == 1 && strcmp(argv[argi], "reset") == 0) {
-        /* Same default mapping the firmware uses for unknown pads
-         * (see Core/Src/gamepad_map.c default_map). */
-        static const unsigned char default_src[SLOTS] = {
-            6, 5, 4, 13, 8, 9, 7, 4, 6, 5
-        };
-        apply(pad, default_src);
-        printf("Pad %d reset to defaults.\n", pad);
-        show(pad);
-        return 0;
-    }
 
-    if (remaining != 2) { usage(); return 1; }
-
-    int slot = find_slot(argv[argi]);
-    if (slot < 0) { printf("unknown button '%s'\n", argv[argi]); usage(); return 1; }
-
-    int v = parse_source(argv[argi + 1]);
-    if (v < 0) {
-        printf("source must be bN (0..11), 0..15, or 'unmap'\n");
-        return 1;
-    }
-
-    unsigned char r = reg_addr(pad, slot);
-    riser[r] = (unsigned char)v;
-
-    unsigned char rb = riser[r];
-    printf("Pad %d %s [reg $%02X] = %s (read-back %s)\n",
-           pad, argv[argi], r, describe_bit(v), describe_bit(rb));
-    return 0;
+    /* No other subcommand recognised. */
+    usage();
+    return 1;
 }
