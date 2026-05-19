@@ -30,6 +30,7 @@
 #include "usbh_hid_gamepad.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 
 /** @addtogroup USBH_LIB
@@ -171,6 +172,14 @@ static uint16_t collect_bits(uint8_t *p, uint16_t offset, uint8_t size, int is_s
 USBH_StatusTypeDef USBH_HID_GamepadInit(USBH_HandleTypeDef *phost)
 {
   HID_HandleTypeDef *HID_Handle =  (HID_HandleTypeDef *) phost->pActiveClass->pData[phost->device.current_interface];
+  /* Reset this host's gamepad_info so a fresh connection starts with
+   * an empty raw_report instead of inheriting the previous pad's last
+   * button state.  Without this, learn-raw / raw on a freshly plugged
+   * pad see stale data until the new pad sends its first report --
+   * confusing because the user expects "just connected" to mean
+   * "nothing recorded yet". */
+  memset(&gamepad_info[phost->id & 1U], 0, sizeof(HID_gamepad_Info_TypeDef));
+
   /* Prefer the endpoint's wMaxPacketSize (already stashed into
    * HID_Handle->length by usbh_hid.c:IFACE_READHID) over the descriptor
    * parser's computed report_size.  Many cheap gamepads have HID descriptors

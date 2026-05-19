@@ -99,39 +99,6 @@ static const char *slot_name[SLOTS] = {
 };
 
 /* ------------------------------------------------------------------ */
-/* Presets.                                                            */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    const char *name;
-    const char *desc;
-    unsigned char src[SLOTS];
-} preset_t;
-
-static const preset_t presets[] = {
-    {"default",  "SNES-style USB pad as CD32 (firmware factory default)",
-        {  6, 5, 4, 13, 8, 9, 7, 4, 6, 5 } },
-    {"joystick", "fires only, no CD32 buttons (clean Atari-joystick mode)",
-        {  6, 5, 4, UNMAPPED, UNMAPPED, UNMAPPED,
-           UNMAPPED, UNMAPPED, UNMAPPED, UNMAPPED } },
-    {"swap",     "factory default with Fire1 and Fire2 swapped",
-        {  5, 6, 4, 13, 8, 9, 7, 4, 6, 5 } },
-    {"xbox",     "Xbox-style USB pad (A/B/X/Y); button colors -> CD32 colors",
-        {  4, 5, 6, 11, 8, 9, 4, 7, 5, 6 } },
-    {"ps",       "PlayStation-style USB pad (Cross/Circle/Square/Triangle)",
-        {  4, 5, 7, 13, 8, 9, 7, 6, 5, 4 } },
-};
-#define PRESET_COUNT (sizeof(presets)/sizeof(presets[0]))
-
-static const preset_t *find_preset(const char *s)
-{
-    int i;
-    for (i = 0; i < (int)PRESET_COUNT; i++)
-        if (strcmp(s, presets[i].name) == 0) return &presets[i];
-    return NULL;
-}
-
-/* ------------------------------------------------------------------ */
 /* Slot/register helpers.                                              */
 /* ------------------------------------------------------------------ */
 
@@ -249,10 +216,6 @@ static void show_ports(void)
     const char *hsct = (hs_ctl < 7) ? ctlnames[hs_ctl] : "?";
     const char *fsct = (fs_ctl < 7) ? ctlnames[fs_ctl] : "?";
 
-    unsigned char mx = riser[0x38];
-    unsigned char my = riser[0x39];
-    unsigned char mb = riser[0x3A];
-
     /* Pad VID/PID exposed by the firmware (little-endian) -- mapping
      * profiles are keyed by VID:PID internally so plugging the same
      * physical pad into either jack recalls its profile.  Address
@@ -265,9 +228,17 @@ static void show_ports(void)
     unsigned int p2_vid = (unsigned)riser[0x3D] | ((unsigned)riser[0x3E] << 8);
 
     printf("USB ports:\n");
-    printf("  Pad 1 (HS): %-8s [$14=%02X]   Pad 2 (FS): %-8s [$15=%02X]\n",
+    /* $14 / $15 reflect which kind of device is plugged into each
+     * physical USB jack (HS vs FS).  Which Amiga pad slot the device
+     * actually lands on is shown by the "Pad-1 / Pad-2 profile" lines
+     * below -- gamepads route by scan order (first found -> Pad-1),
+     * not by which jack they're in. */
+    printf("  HS jack: %-8s [$14=%02X]   FS jack: %-8s [$15=%02X]\n",
            port_name(p1), p1, port_name(p2), p2);
-    printf("  bus-read sentinel: $16=%02X (expect A5)\n", sentinel);
+    if (sentinel != 0xA5) {
+        printf("  WARNING: bus sentinel $16=%02X (expected A5) "
+               "-- riser/STM32 path broken\n", sentinel);
+    }
     printf("\n");
     printf("  HS  gState=%-13s conn=%d  enum=%s\n",
            gstate_name(hs), (hs & 0x80) ? 1 : 0, hsen);
@@ -289,13 +260,6 @@ static void show_ports(void)
     } else {
         printf("  Pad-2 profile: (no pad)\n");
     }
-    printf("\n");
-    printf("  mouse: dx=%4d dy=%4d  btn=%c%c%c  alive=%c\n",
-           (signed char)mx, (signed char)my,
-           (mb & 1) ? 'L' : '-',
-           (mb & 2) ? 'R' : '-',
-           (mb & 4) ? 'M' : '-',
-           (mb & 0x80) ? 'y' : 'n');
 }
 
 static void show(int pad)
@@ -314,22 +278,6 @@ static void apply(int pad, const unsigned char *src)
 {
     int i;
     for (i = 0; i < SLOTS; i++) riser[reg_addr(pad, i)] = src[i];
-}
-
-static void list_presets(void)
-{
-    int i, j;
-    printf("Available presets:\n");
-    for (i = 0; i < (int)PRESET_COUNT; i++) {
-        printf("  %-9s %s\n", presets[i].name, presets[i].desc);
-        printf("            ");
-        for (j = 0; j < SLOTS; j++) {
-            unsigned char v = presets[i].src[j];
-            if (v == UNMAPPED) printf(" %s=-", slot_name[j]);
-            else               printf(" %s=%u", slot_name[j], v);
-        }
-        printf("\n");
-    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -568,20 +516,6 @@ static int cmd_raw(void)
     return 0;
 }
 
-/* Number of bits different between two raw report snapshots. */
-static int raw_popcount_diff(const unsigned char *a, const unsigned char *b)
-{
-    static const unsigned char nbits[16] = {
-        0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4
-    };
-    int sum = 0, i;
-    for (i = 0; i < RAW_REPORT_TOTAL; i++) {
-        unsigned char d = a[i] ^ b[i];
-        sum += nbits[d & 0xF] + nbits[(d >> 4) & 0xF];
-    }
-    return sum;
-}
-
 /* Interactive learn-raw.  For each slot, samples raw bytes continuously
  * while waiting for the user to press Enter, keeping the snapshot with
  * the largest XOR against baseline.  That way the user holds the button
@@ -602,7 +536,6 @@ static int cmd_learn_raw(void)
     };
     enum { N_RAW_SLOTS = 14 };
     unsigned char baseline[RAW_REPORT_TOTAL];
-    unsigned char best[RAW_REPORT_TOTAL];
     unsigned char curr[RAW_REPORT_TOTAL];
     unsigned char captured[N_RAW_SLOTS][RAW_REPORT_TOTAL];
     int taken[N_RAW_SLOTS];
@@ -611,38 +544,114 @@ static int cmd_learn_raw(void)
     BPTR cin = Input();
 
     printf("Learn-raw: discovers which raw HID bytes/bits each button uses.\n");
-    printf("Release everything and press Enter to capture idle baseline\n");
+    printf("\n");
+
+    /* Step 1: wait for the pad to start emitting reports.  Some pads
+     * (e.g. 8BitDo SFC30) send NOTHING until the first state change,
+     * so raw_report stays all-zeros after connect.  Poll non-blocking;
+     * once we see any non-zero byte the pad is alive. */
+    printf("Waiting for pad activity... ");
+    fflush(stdout);
+    {
+        int t, k;
+        int seen_nonzero = 0;
+        int hinted = 0;
+        for (t = 0; t < 2000; t++) {                  /* up to ~20 s */
+            read_all_raw(baseline);
+            for (k = 0; k < RAW_REPORT_TOTAL; k++) {
+                if (baseline[k]) { seen_nonzero = 1; break; }
+            }
+            if (seen_nonzero) break;
+            if (!hinted && t == 200) {                 /* ~2 s in */
+                printf("\n  (no reports yet -- press and release any "
+                       "button on the pad to\n  wake it, then this "
+                       "should continue): ");
+                fflush(stdout);
+                hinted = 1;
+            }
+            (void)WaitForChar(cin, 10000);             /* 10 ms */
+        }
+        if (!seen_nonzero) {
+            printf("\nWARNING: pad still all-zeros after 20 s.  "
+                   "Continuing anyway.\n");
+        } else {
+            printf("ok.\n");
+        }
+    }
+
+    /* Step 2: release everything and capture a baseline. */
+    printf("Now RELEASE everything and press Enter to capture baseline\n");
     printf("('q' Enter to quit, 's' Enter to skip a slot):\n");
     fflush(stdout);
-
-    /* baseline: cooked-mode Read blocks until Enter */
     if (Read(cin, line, sizeof(line)) <= 0) return 0;
     if (line[0] == 'q' || line[0] == 'Q') return 0;
-    read_all_raw(baseline);
-    printf("Baseline captured.\n\n");
+    /* Sample for ~300 ms so the captured baseline is a steady frame
+     * (the user may have just released a button and a transient
+     * "release" report is still in flight). */
+    {
+        int t;
+        for (t = 0; t < 30; t++) {
+            read_all_raw(baseline);
+            (void)WaitForChar(cin, 10000);
+        }
+    }
+    printf("Baseline:");
+    {
+        int k;
+        for (k = 0; k < RAW_REPORT_TOTAL; k++) {
+            if ((k & 7) == 0) printf("\n  [%02d]", k);
+            printf(" %02X", baseline[k]);
+        }
+        printf("\n\n");
+    }
     fflush(stdout);
 
     for (i = 0; i < N_RAW_SLOTS; i++) taken[i] = 0;
 
+    printf("Press and HOLD each button below until you press Enter.  "
+           "If raw_report\nstill shows the previous button when a new slot "
+           "starts, just release\nand wait a moment before pressing the new "
+           "button.\nEnter alone = skip, s = skip, q = quit.\n\n");
     for (i = 0; i < N_RAW_SLOTS; i++) {
-        printf("Hold [%s], then press Enter: ", raw_slot_names[i]);
+        printf("  [%s] : ", raw_slot_names[i]);
         fflush(stdout);
 
-        /* Sample raw bytes as fast as we can while user types.  Switch
-         * to raw mode just long enough to do the polling, then back to
-         * cooked.  Pick the snapshot that differs most from baseline. */
         SetMode(cin, 1);
         drain_input(cin);
-        for (k = 0; k < RAW_REPORT_TOTAL; k++) best[k] = baseline[k];
-        int best_diff = 0;
+
+        /* Step 1: wait up to 500 ms for raw_report to return to the
+         * baseline state.  Stops the previous slot's button hold from
+         * leaking into this slot's "last_diff" tracking. */
+        {
+            int t, k2;
+            for (t = 0; t < 50; t++) {
+                read_all_raw(curr);
+                int differs = 0;
+                for (k2 = 0; k2 < RAW_REPORT_TOTAL; k2++) {
+                    if (curr[k2] != baseline[k2]) { differs = 1; break; }
+                }
+                if (!differs) break;
+                if (WaitForChar(cin, 10000)) break;   /* user got impatient */
+            }
+        }
+
+        /* Step 2: sample continuously until Enter.  Remember the most
+         * recent non-baseline snapshot (last_diff) -- that's the
+         * button-held state even if the user releases just before
+         * pressing Enter (the common case). */
+        unsigned char last_diff[RAW_REPORT_TOTAL];
+        int have_diff = 0;
         int got = 0;
         char c = 0;
         for (;;) {
             read_all_raw(curr);
-            int diff = raw_popcount_diff(curr, baseline);
-            if (diff > best_diff) {
-                best_diff = diff;
-                for (k = 0; k < RAW_REPORT_TOTAL; k++) best[k] = curr[k];
+            int differs = 0;
+            for (k = 0; k < RAW_REPORT_TOTAL; k++) {
+                if (curr[k] != baseline[k]) { differs = 1; break; }
+            }
+            if (differs) {
+                for (k = 0; k < RAW_REPORT_TOTAL; k++) last_diff[k] = curr[k];
+                have_diff = 1;
             }
             if (WaitForChar(cin, 20000)) {
                 if (Read(cin, &c, 1) > 0
@@ -656,18 +665,22 @@ static int cmd_learn_raw(void)
         if (!got || c == 'q' || c == 'Q') { printf("done.\n"); break; }
         if (c == 's' || c == 'S')         { printf("skip.\n"); continue; }
 
-        for (k = 0; k < RAW_REPORT_TOTAL; k++) captured[i][k] = best[k];
+        if (!have_diff) {
+            printf("skip (no change from baseline).\n");
+            continue;
+        }
+
+        for (k = 0; k < RAW_REPORT_TOTAL; k++) captured[i][k] = last_diff[k];
         taken[i] = 1;
 
         int any = 0;
         for (k = 0; k < RAW_REPORT_TOTAL; k++) {
-            unsigned char d = best[k] ^ baseline[k];
+            unsigned char d = last_diff[k] ^ baseline[k];
             if (d) {
                 printf("%sbyte%d^%02X", any ? ", " : "", k, d);
                 any = 1;
             }
         }
-        if (!any) printf("(no change detected)");
         printf("\n");
         fflush(stdout);
     }
@@ -738,23 +751,22 @@ static int cmd_learn(int pad)
 static void usage(void)
 {
     printf(
-      "Usage:\n"
+      "Usage (pad number is optional; defaults to 1):\n"
       "  risergamepad                              show current mapping\n"
       "  risergamepad ports                        show what's on each USB port\n"
-      "  risergamepad presets                      list presets\n"
-      "  risergamepad watch <1|2>                  show live USB button state\n"
+      "  risergamepad watch-ports                  show ports live (250 ms refresh)\n"
+      "  risergamepad watch [1|2]                  show live USB button state\n"
       "  risergamepad raw                          show raw HID report bytes\n"
       "  risergamepad learn-raw                    discover which raw bytes a pad uses\n"
-      "  risergamepad learn <1|2>                  interactive button learning\n"
-      "  risergamepad <1|2> <button> <source>      set one slot\n"
-      "  risergamepad <1|2> reset                  factory defaults\n"
-      "  risergamepad <1|2> preset <name>          apply a preset\n"
+      "  risergamepad learn [1|2]                  interactive button learning\n"
+      "  risergamepad [1|2] <button> <source>      set one slot\n"
+      "  risergamepad [1|2] reset                  factory defaults\n"
       "\n"
       " button = fire1 fire2 fire3 play rw ff green yellow red blue\n"
       " source = bN (USB button 0..11), 0..15 (raw bit), or 'u'/'unmap'\n"
       "\n"
-      "Tip: run 'risergamepad watch 1' and press each button on your pad to\n"
-      "see which 'bN' label it has, or use 'risergamepad learn 1' to assign\n"
+      "Tip: run 'risergamepad watch' and press each button on your pad to\n"
+      "see which 'bN' label it has, or use 'risergamepad learn' to assign\n"
       "every slot interactively.\n");
 }
 
@@ -768,11 +780,7 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    if (argc == 2 && strcmp(argv[1], "presets") == 0) {
-        list_presets();
-        return 0;
-    }
-
+    /* Standalone subcommands that don't take a pad arg. */
     if (argc == 2 && strcmp(argv[1], "ports") == 0) {
         show_ports();
         return 0;
@@ -807,46 +815,48 @@ int main(int argc, char *argv[])
         return cmd_learn_raw();
     }
 
-    if (argc == 3 &&
-        (strcmp(argv[1], "watch") == 0 || strcmp(argv[1], "learn") == 0)) {
-        int pad = atoi(argv[2]);
-        if (pad != 1 && pad != 2) { printf("pad must be 1 or 2\n"); return 1; }
-        return strcmp(argv[1], "watch") == 0 ? cmd_watch(pad) : cmd_learn(pad);
+    /* Pad-scoped subcommands.  Pad number is optional and defaults to
+     * 1 (the joystick port, where a single USB gamepad always lands).
+     * Explicit "1" or "2" at argv[1] overrides; otherwise argv[1] is
+     * the subcommand or button name. */
+    int pad = 1;
+    int argi = 1;
+    if (strcmp(argv[argi], "1") == 0 || strcmp(argv[argi], "2") == 0) {
+        pad = atoi(argv[argi]);
+        argi++;
+    }
+    int remaining = argc - argi;
+
+    if (remaining == 0) {
+        /* "risergamepad 1" or "risergamepad 2" -- show that pad. */
+        show(pad);
+        return 0;
     }
 
-    if (argc < 3) { usage(); return 1; }
-
-    int pad = atoi(argv[1]);
-    if (pad != 1 && pad != 2) {
-        printf("pad must be 1 or 2\n");
-        return 1;
+    if (remaining == 1 && strcmp(argv[argi], "watch") == 0) {
+        return cmd_watch(pad);
     }
-
-    if (argc == 3 && strcmp(argv[2], "reset") == 0) {
-        apply(pad, presets[0].src);   /* index 0 == "default" */
+    if (remaining == 1 && strcmp(argv[argi], "learn") == 0) {
+        return cmd_learn(pad);
+    }
+    if (remaining == 1 && strcmp(argv[argi], "reset") == 0) {
+        /* Same default mapping the firmware uses for unknown pads
+         * (see Core/Src/gamepad_map.c default_map). */
+        static const unsigned char default_src[SLOTS] = {
+            6, 5, 4, 13, 8, 9, 7, 4, 6, 5
+        };
+        apply(pad, default_src);
         printf("Pad %d reset to defaults.\n", pad);
         show(pad);
         return 0;
     }
 
-    if (argc == 4 && strcmp(argv[2], "preset") == 0) {
-        const preset_t *p = find_preset(argv[3]);
-        if (!p) {
-            printf("unknown preset '%s'.  Try: risergamepad presets\n", argv[3]);
-            return 1;
-        }
-        apply(pad, p->src);
-        printf("Pad %d set to preset '%s'.\n", pad, p->name);
-        show(pad);
-        return 0;
-    }
+    if (remaining != 2) { usage(); return 1; }
 
-    if (argc != 4) { usage(); return 1; }
+    int slot = find_slot(argv[argi]);
+    if (slot < 0) { printf("unknown button '%s'\n", argv[argi]); usage(); return 1; }
 
-    int slot = find_slot(argv[2]);
-    if (slot < 0) { printf("unknown button '%s'\n", argv[2]); usage(); return 1; }
-
-    int v = parse_source(argv[3]);
+    int v = parse_source(argv[argi + 1]);
     if (v < 0) {
         printf("source must be bN (0..11), 0..15, or 'unmap'\n");
         return 1;
@@ -857,6 +867,6 @@ int main(int argc, char *argv[])
 
     unsigned char rb = riser[r];
     printf("Pad %d %s [reg $%02X] = %s (read-back %s)\n",
-           pad, argv[2], r, describe_bit(v), describe_bit(rb));
+           pad, argv[argi], r, describe_bit(v), describe_bit(rb));
     return 0;
 }
