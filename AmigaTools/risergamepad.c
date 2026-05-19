@@ -151,7 +151,68 @@ static const char *gstate_name(unsigned char s)
     }
 }
 
-static void show_ports(void)
+/* User-facing summary: what's driving each Amiga input.  Three rows
+ * (joystick / mouse / keyboard), each pointing to either a USB device
+ * (with VID:PID identifier) or the Amiga's built-in input.  Casual
+ * users see this; `risergamepad debug` prints the USB-host
+ * diagnostics for when something isn't enumerating. */
+static void show_status(void)
+{
+    unsigned char hs_jack = riser[PAD1_PORT_TYPE];
+    unsigned char fs_jack = riser[PAD2_PORT_TYPE];
+    unsigned char sentinel = riser[SENTINEL_REG];
+
+    /* Active gamepad VID/PIDs per Amiga port slot.  First USB pad
+     * lands on the joystick port, second pad (if any) on the
+     * mouse-shared port. */
+    unsigned int p1_vid = (unsigned)riser[0x08] | ((unsigned)riser[0x09] << 8);
+    unsigned int p1_pid = (unsigned)riser[0x3B] | ((unsigned)riser[0x3C] << 8);
+    unsigned int p2_vid = (unsigned)riser[0x3D] | ((unsigned)riser[0x3E] << 8);
+
+    int kbd_attached = (hs_jack == PORT_KEYBOARD) || (fs_jack == PORT_KEYBOARD);
+    int mouse_attached = (hs_jack == PORT_MOUSE) || (fs_jack == PORT_MOUSE);
+
+    if (sentinel != 0xA5) {
+        printf("WARNING: bus sentinel $16=%02X (expected A5) "
+               "-- Riser/STM32 path broken\n\n", sentinel);
+    }
+
+    printf("Amiga inputs (taken over when a USB device is connected):\n");
+
+    /* Joystick port (Amiga port 2 / joy1dat): always the first USB
+     * gamepad if any is plugged in.  No USB -> Amiga's own joystick
+     * port is whatever's on its jack (we can't see non-USB input). */
+    if (p1_vid) {
+        printf("  Joystick port : USB gamepad [%04x:%04x]\n", p1_vid, p1_pid);
+    } else {
+        printf("  Joystick port : (no USB device)\n");
+    }
+
+    /* Mouse port (Amiga port 1 / joy0dat): USB mouse takes priority
+     * (firmware blocks gamepad2 input when a USB mouse is present);
+     * otherwise the second USB gamepad; otherwise nothing -- the
+     * Amiga's own mouse jack is used. */
+    if (mouse_attached) {
+        printf("  Mouse port    : USB mouse\n");
+    } else if (p2_vid) {
+        printf("  Mouse port    : USB gamepad [VID %04x] (2nd gamepad)\n",
+               p2_vid);
+    } else {
+        printf("  Mouse port    : (no USB device)\n");
+    }
+
+    /* Keyboard: USB keyboard if attached, else Amiga keyboard. */
+    if (kbd_attached) {
+        printf("  Keyboard      : USB keyboard\n");
+    } else {
+        printf("  Keyboard      : (no USB device)\n");
+    }
+}
+
+/* Detailed debug view, mostly useful when something isn't enumerating
+ * properly.  Shows USB-host gState / EnumState / iface_init /
+ * ctl_state per host. */
+static void show_debug(void)
 {
     /* Formatted for a 77-column maximised AmigaShell window: each
      * line stays <= 77 chars even when every field hits its longest
@@ -159,8 +220,8 @@ static void show_ports(void)
     unsigned char p1 = riser[PAD1_PORT_TYPE];
     unsigned char p2 = riser[PAD2_PORT_TYPE];
     unsigned char sentinel = riser[SENTINEL_REG];
-    unsigned char hs = riser[0x34];   /* gState moved off $1C to avoid */
-    unsigned char fs = riser[0x35];   /* shadowing the raw window $18..$1F */
+    unsigned char hs = riser[0x34];
+    unsigned char fs = riser[0x35];
     unsigned char hs_enum = riser[0x07];
     unsigned char fs_enum = riser[0x05];
     unsigned char hs_iface = riser[0x02];
@@ -190,23 +251,11 @@ static void show_ports(void)
     const char *hsct = (hs_ctl < 7) ? ctlnames[hs_ctl] : "?";
     const char *fsct = (fs_ctl < 7) ? ctlnames[fs_ctl] : "?";
 
-    /* Pad VID/PID exposed by the firmware (little-endian) -- mapping
-     * profiles are keyed by VID:PID internally so plugging the same
-     * physical pad into either jack recalls its profile.  Address
-     * cells are scattered because the Riser's external decoder only
-     * routes 6 bits and most cells in $00..$3F are already in use.
-     * Pad 2 PID is not exposed (firmware uses it for profile keying
-     * but it's omitted here to fit in the remaining cells). */
     unsigned int p1_vid = (unsigned)riser[0x08] | ((unsigned)riser[0x09] << 8);
     unsigned int p1_pid = (unsigned)riser[0x3B] | ((unsigned)riser[0x3C] << 8);
     unsigned int p2_vid = (unsigned)riser[0x3D] | ((unsigned)riser[0x3E] << 8);
 
-    printf("USB ports:\n");
-    /* $14 / $15 reflect which kind of device is plugged into each
-     * physical USB jack (HS vs FS).  Which Amiga pad slot the device
-     * actually lands on is shown by the "Pad-1 / Pad-2 profile" lines
-     * below -- gamepads route by scan order (first found -> Pad-1),
-     * not by which jack they're in. */
+    printf("USB ports (debug):\n");
     printf("  HS jack: %-8s [$14=%02X]   FS jack: %-8s [$15=%02X]\n",
            port_name(p1), p1, port_name(p2), p2);
     if (sentinel != 0xA5) {
@@ -225,21 +274,22 @@ static void show_ports(void)
            fsif, (unsigned)fs_inum, fsct);
     printf("\n");
     if (p1_vid) {
-        printf("  Pad-1 profile: VID:PID %04x:%04x\n", p1_vid, p1_pid);
+        printf("  Joystick port: VID:PID %04x:%04x\n", p1_vid, p1_pid);
     } else {
-        printf("  Pad-1 profile: (no pad)\n");
+        printf("  Joystick port: (no gamepad)\n");
     }
     if (p2_vid) {
-        printf("  Pad-2 profile: VID %04x\n", p2_vid);
+        printf("  Mouse port:    VID %04x\n", p2_vid);
     } else {
-        printf("  Pad-2 profile: (no pad)\n");
+        printf("  Mouse port:    (no gamepad)\n");
     }
 }
 
 static void show(int pad)
 {
     int i;
-    printf("Pad %d:\n", pad);
+    printf("%s mapping:\n",
+           (pad == 1) ? "Joystick port" : "Mouse port");
     for (i = 0; i < SLOTS; i++) {
         unsigned char r = reg_addr(pad, i);
         unsigned char v = riser[r];
@@ -369,7 +419,8 @@ static int cmd_watch(int pad)
 {
     BPTR cin = Input();
     unsigned int last = ~0u;
-    printf("Watching pad %d.  Press buttons on your USB controller.\n", pad);
+    printf("Watching the %s-port gamepad.  Press buttons to see them light up.\n",
+           (pad == 1) ? "joystick" : "mouse");
     printf("Press Enter or Ctrl-C to stop.\n\n");
     fflush(stdout);
 
@@ -701,11 +752,12 @@ static int cmd_learn(int pad)
     int i;
     unsigned char new_src[SLOTS];
 
-    printf("Learn mode for pad %d.\n", pad);
-    printf("Plug in your USB pad, then for each entry below:\n");
-    printf("  - HOLD the button you want for that slot, OR\n");
-    printf("  - press [Enter] to keep current setting, OR\n");
-    printf("  - press [u] to mark unmapped, OR\n");
+    printf("Mapping the USB gamepad on the Amiga %s port.\n\n",
+           (pad == 1) ? "joystick" : "mouse");
+    printf("For each Amiga function below:\n");
+    printf("  - HOLD the gamepad button you want, OR\n");
+    printf("  - press [Enter] to keep the current setting, OR\n");
+    printf("  - press [u] to leave it unmapped, OR\n");
     printf("  - press [q] to abort without saving.\n\n");
 
     /* preload current values so [Enter] keeps them */
@@ -737,50 +789,109 @@ static int cmd_learn(int pad)
 static void usage(void)
 {
     printf(
-      "Usage (pad number is optional; defaults to 1):\n"
-      "  risergamepad                              show ports + connected pad mappings\n"
-      "  risergamepad ports                        show what's on each USB port\n"
-      "  risergamepad watch-ports                  show ports live (250 ms refresh)\n"
-      "  risergamepad [1|2]                        show one pad's mapping\n"
-      "  risergamepad watch [1|2]                  show live USB button state\n"
-      "  risergamepad raw                          show raw HID report bytes\n"
-      "  risergamepad learn-raw                    discover which raw bytes a pad uses\n"
-      "  risergamepad learn [1|2]                  interactive button learning\n");
+      "risergamepad -- TFRiser USB gamepad mapper\n"
+      "\n"
+      "Most common:\n"
+      "  risergamepad                  status + connected gamepad mappings\n"
+      "  risergamepad learn            map your gamepad's buttons (interactive)\n"
+      "  risergamepad watch            show live button state (which b<N> = which)\n"
+      "\n"
+      "How mappings work:\n"
+      "  Each gamepad has its own button mapping, keyed by its USB VID:PID.\n"
+      "  Plug the same gamepad back in and the mapping auto-loads regardless\n"
+      "  of which USB jack you use.  Up to 4 gamepads stored.\n"
+      "\n"
+      "  A single connected gamepad drives the Amiga joystick port (labeled\n"
+      "  \"1\" on the CD32).  A second gamepad (if plugged in alongside) drives\n"
+      "  the mouse port (labeled \"2\" on the CD32) instead.\n"
+      "\n"
+      "Less common:\n"
+      "  risergamepad ports            short status only\n"
+      "  risergamepad watch-ports      status live (250 ms refresh)\n"
+      "  risergamepad debug            USB-host diagnostic view\n"
+      "  risergamepad watch-debug      diagnostic view live\n"
+      "  risergamepad raw              raw HID report bytes (developer)\n"
+      "  risergamepad learn-raw        discover raw bytes for an unsupported gamepad\n"
+      "\n"
+      "By default 'learn' and 'watch' work on the joystick-port gamepad; append\n"
+      "'2' (e.g. 'risergamepad learn 2') to target the mouse-port one instead.\n");
 }
 
 int main(int argc, char *argv[])
 {
     if (argc == 1) {
-        /* Default invocation: port summary + the mapping of each
-         * actually-connected pad.  Use `risergamepad 1` or
-         * `risergamepad 2` explicitly to see a slot's mapping even
-         * when no pad is plugged in. */
-        show_ports();
+        /* Default invocation: status + brief profile explanation
+         * + tip pointing at `learn`.  This is the main user-facing
+         * landing page; debug-y stuff is moved behind `debug`. */
+        show_status();
+        printf("\n");
+        printf("Profiles:\n");
+        printf("  Each gamepad has its own button mapping, identified by "
+               "its USB VID:PID.\n");
+        printf("  Plug the same gamepad back in and the mapping is "
+               "auto-loaded,\n  regardless of which USB jack you use.  "
+               "Up to 4 gamepads stored.\n");
+        printf("\n");
+        printf("To map your gamepad's buttons:  risergamepad learn\n");
+        printf("For all commands:               risergamepad help\n");
+
         int p1_present = (riser[0x08] | riser[0x09]) != 0;
         int p2_present = (riser[0x3D] | riser[0x3E]) != 0;
-        if (p1_present || p2_present) printf("\n");
-        if (p1_present) show(1);
-        if (p2_present) show(2);
+        if (p1_present || p2_present) {
+            printf("\n");
+            if (p1_present) show(1);
+            if (p2_present) show(2);
+        }
         return 0;
     }
 
     /* Standalone subcommands that don't take a pad arg. */
+    if (argc == 2 && (strcmp(argv[1], "help") == 0
+                      || strcmp(argv[1], "--help") == 0)) {
+        usage();
+        return 0;
+    }
+
     if (argc == 2 && strcmp(argv[1], "ports") == 0) {
-        show_ports();
+        show_status();
+        return 0;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "debug") == 0) {
+        show_debug();
         return 0;
     }
 
     if (argc == 2 && strcmp(argv[1], "watch-ports") == 0) {
-        /* Continuous show_ports polling -- press Return / Ctrl-C to
-         * stop.  Useful for catching transient USB states (e.g. a
-         * device re-enumerating to a different identity). */
+        /* Continuous user-friendly status -- press Return / Ctrl-C
+         * to stop.  Use `risergamepad watch-debug` for the detailed
+         * USB-host state if something's not enumerating cleanly. */
         BPTR cin = Input();
         printf("Watching ports.  Press Return to stop.\n\n");
         while (1) {
             printf("\033[H\033[2J");   /* clear screen */
-            show_ports();
+            show_status();
             fflush(stdout);
             if (WaitForChar(cin, 250000)) {   /* 250 ms */
+                char c = 0;
+                if (Read(cin, &c, 1) > 0) {
+                    if (c == '\n' || c == '\r' || c == 0x03) break;
+                }
+            }
+            if (CheckSignal(SIGBREAKF_CTRL_C)) break;
+        }
+        return 0;
+    }
+
+    if (argc == 2 && strcmp(argv[1], "watch-debug") == 0) {
+        /* Continuous detailed debug view. */
+        BPTR cin = Input();
+        printf("Watching debug.  Press Return to stop.\n\n");
+        while (1) {
+            printf("\033[H\033[2J");
+            show_debug();
+            fflush(stdout);
+            if (WaitForChar(cin, 250000)) {
                 char c = 0;
                 if (Read(cin, &c, 1) > 0) {
                     if (c == '\n' || c == '\r' || c == 0x03) break;
