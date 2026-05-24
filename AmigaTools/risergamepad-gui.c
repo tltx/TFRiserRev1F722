@@ -33,7 +33,19 @@ static volatile unsigned char * const riser_gui =
 /* Special return codes from gui_capture_button(). */
 #define CAP_ABORT  -1
 #define CAP_SKIP   -2
-#define CAP_UNMAP  -3
+
+/* Live-data layout: bits 0..3 are D-pad (R/L/D/U), bits 4..15 are
+ * USB buttons.  GUI uses D-pad combos so the flow can be driven
+ * entirely from the gamepad:
+ *   LEFT  + any button = exit
+ *   DOWN  alone        = skip current slot (leave unmapped)
+ *   button (no D-pad)  = capture */
+#define MASK_RIGHT    0x0001u
+#define MASK_LEFT     0x0002u
+#define MASK_DOWN     0x0004u
+#define MASK_UP       0x0008u
+#define MASK_DPAD     0x000Fu
+#define MASK_BUTTONS  0xFFF0u
 
 /* Library-base storage.  amiga.lib startup auto-opens dos.library
  * and sets DOSBase / SysBase; we open intuition and graphics
@@ -216,84 +228,63 @@ static unsigned char gui_reg_addr(int pad, int slot)
  * CAP_* codes).  Polls the live USB state on each Delay() tick.
  * Requires the same button bit pattern to be seen for two
  * consecutive ticks before accepting, so brief noise doesn't win. */
+/* Wait for the user to either press a button (returns its bit index)
+ * or input a gamepad combo for skip/exit.  Polled at 20ms intervals;
+ * a USB button press is accepted after ~60ms of steady hold. */
 static int gui_capture_button(struct Window *win, int pad)
 {
     unsigned int prev_btns = 0;
     int stable = 0;
     int candidate = -1;
-    unsigned int debug_tick = 0;
 
     for (;;) {
         struct IntuiMessage *msg;
-        unsigned int w, btns;
+        unsigned int w, dpad, btns;
 
-        /* Drain any queued IDCMP messages (close gadget / keyboard). */
+        /* Window-level escape hatches: close gadget, q, Esc. */
         while ((msg = (struct IntuiMessage*)GetMsg(win->UserPort)) != 0L) {
             ULONG class = msg->Class;
             UWORD code  = msg->Code;
             ReplyMsg((struct Message*)msg);
 
             if (class == IDCMP_CLOSEWINDOW) return CAP_ABORT;
-            if (class == IDCMP_VANILLAKEY) {
-                if (code == 'q' || code == 'Q' || code == 27) return CAP_ABORT;
-                if (code == 's' || code == 'S' || code == ' ') return CAP_SKIP;
-                if (code == 'u' || code == 'U') return CAP_UNMAP;
-            }
+            if (class == IDCMP_VANILLAKEY
+                && (code == 'q' || code == 'Q' || code == 27))
+                return CAP_ABORT;
         }
         if (CheckSignal(SIGBREAKF_CTRL_C)) return CAP_ABORT;
 
         /* Poll USB state. */
-        w = gui_read_live(pad);
-        btns = w & 0xFFF0u;     /* mask out D-pad */
+        w    = gui_read_live(pad);
+        dpad = w & MASK_DPAD;
+        btns = w & MASK_BUTTONS;
 
-        /* DEBUG: print live state above the prompt every loop so we
-         * can see whether the read works. */
-        {
-            char dbg[48];
-            struct RastPort *rp = win->RPort;
-            int n;
-            debug_tick++;
-            n = sprintf(dbg, "tick=%u $10=%02X $11=%02X w=%04X stable=%d",
-                        debug_tick,
-                        (unsigned)riser_gui[PAD1_LIVE_DATA],
-                        (unsigned)riser_gui[PAD1_LIVE_EXTRA],
-                        w, stable);
-            SetAPen(rp, (LONG)0);
-            RectFill(rp, 8, 162, win->Width - 8, 174);
-            SetAPen(rp, (LONG)1);
-            SetDrMd(rp, (LONG)JAM1);
-            Move(rp, 8, 172);
-            Text(rp, (UBYTE*)dbg, (LONG)n);
+        /* LEFT + any button = exit. */
+        if ((dpad & MASK_LEFT) && btns) return CAP_ABORT;
+
+        /* DOWN alone = skip this slot (leave it unmapped).  Wait
+         * for release before returning. */
+        if ((dpad & MASK_DOWN) && !btns) {
+            while (gui_read_live(pad) & MASK_DPAD) {
+                if (CheckSignal(SIGBREAKF_CTRL_C)) return CAP_ABORT;
+                Delay((LONG)1);
+            }
+            return CAP_SKIP;
         }
 
-        if (btns == 0) {
-            stable = 0;
-            candidate = -1;
-        } else {
+        /* Button held (no D-pad direction held simultaneously). */
+        if (btns && !dpad) {
             int b;
             for (b = 4; b < 16; b++) {
                 if (btns & (1u << b)) { candidate = b; break; }
             }
             if (btns == prev_btns) {
                 if (++stable >= 3) {
-                    /* Capture confirmed.  Wait for the user to
-                     * release before returning so the NEXT slot's
-                     * capture starts from a clean idle state -- this
-                     * is what stops the GUI from speed-running
-                     * through all slots while one button is held. */
+                    /* Capture confirmed.  Wait for release before
+                     * returning so the next slot's capture starts
+                     * from idle. */
                     int captured = candidate;
-                    while (gui_read_live(pad) & 0xFFF0u) {
-                        struct IntuiMessage *mm;
-                        while ((mm = (struct IntuiMessage*)
-                                GetMsg(win->UserPort)) != 0L) {
-                            ULONG cl = mm->Class;
-                            UWORD cd = mm->Code;
-                            ReplyMsg((struct Message*)mm);
-                            if (cl == IDCMP_CLOSEWINDOW) return CAP_ABORT;
-                            if (cl == IDCMP_VANILLAKEY
-                                && (cd == 'q' || cd == 'Q' || cd == 27))
-                                return CAP_ABORT;
-                        }
+                    while (gui_read_live(pad) & MASK_BUTTONS) {
                         if (CheckSignal(SIGBREAKF_CTRL_C)) return CAP_ABORT;
                         Delay((LONG)1);
                     }
@@ -302,6 +293,9 @@ static int gui_capture_button(struct Window *win, int pad)
             } else {
                 stable = 1;
             }
+        } else {
+            stable = 0;
+            candidate = -1;
         }
         prev_btns = btns;
 
@@ -344,7 +338,7 @@ static void gui_verify_mode(struct Window *win, int pad,
 
     draw_pad(win, pad, -1,
              "Saved!  Press buttons -- they light up if mapped correctly.",
-             "q / Esc / close window = exit");
+             "LEFT + button = exit");
 
     while (!done) {
         struct IntuiMessage *msg;
@@ -365,6 +359,10 @@ static void gui_verify_mode(struct Window *win, int pad,
 
         w = gui_read_live(pad);
         btns = w & 0xFFF0u;
+
+        /* Exit combo: D-pad LEFT + any button held. */
+        if ((w & MASK_LEFT) && btns) { done = 1; break; }
+
         if (btns != prev_btns) {
             int i;
             struct RastPort *rp = win->RPort;
@@ -372,7 +370,7 @@ static void gui_verify_mode(struct Window *win, int pad,
             RectFill(rp, 4, 12, win->Width - 4, win->Height - 4);
             draw_chrome(rp, pad,
                 "Press buttons -- they light up if mapped correctly.",
-                "q / Esc / close window = exit");
+                "LEFT + button = exit");
             draw_dpad(rp);
             for (i = 0; i < (int)N_PAD_BUTTONS; i++) {
                 int slot = pad_buttons[i].slot;
@@ -395,18 +393,12 @@ static int cmd_gui_run(struct Window *win, int pad)
     unsigned char new_src[SLOTS];
     int i, slot;
     char prompt[80];
-    const char *hint = "Space=skip  u=unmap  q=quit";
+    const char *hint = "DOWN = skip      LEFT + button = exit";
 
-    /* Preload current mappings so skip keeps them. */
-    for (i = 0; i < SLOTS; i++) {
-        new_src[i] = riser_gui[gui_reg_addr(pad, i)];
-    }
-
-    /* CD32 has no separate fire2/fire3 -- force them unmapped per
-     * the GUI's design.  User can still set them via text learn if
-     * they want something there. */
-    new_src[PAD_FIRE2] = UNMAPPED;
-    new_src[PAD_FIRE3] = UNMAPPED;
+    /* Start with every slot unmapped.  The GUI is meant to be a
+     * one-shot setup: each prompt either captures a button or
+     * leaves the slot empty.  No carry-over from previous sessions. */
+    for (i = 0; i < SLOTS; i++) new_src[i] = UNMAPPED;
 
     for (i = 0; i < (int)N_PROMPTS; i++) {
         int captured;
@@ -418,15 +410,10 @@ static int cmd_gui_run(struct Window *win, int pad)
 
         captured = gui_capture_button(win, pad);
         if (captured == CAP_ABORT) return 1;
-        if (captured == CAP_SKIP)  continue;       /* keep current value */
-        if (captured == CAP_UNMAP) {
-            new_src[slot] = UNMAPPED;
-            if (slot == PAD_RED) new_src[PAD_FIRE1] = UNMAPPED;
-            continue;
-        }
+        if (captured == CAP_SKIP) continue;        /* leave unmapped */
 
-        /* Real button capture.  RED also writes the fire1 slot so
-         * both labels point at the same USB bit. */
+        /* Real capture.  RED also fills fire1 so both labels point
+         * at the same USB button. */
         new_src[slot] = (unsigned char)captured;
         if (slot == PAD_RED) new_src[PAD_FIRE1] = (unsigned char)captured;
     }
