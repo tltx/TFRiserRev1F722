@@ -17,6 +17,6 @@ export PATH="$VBCC_ROOT/bin:$VASM_DIR:$VLINK_DIR:$PATH"
 export VBCC="$VBCC_ROOT"
 
 cd "$(dirname "$0")"
-vc +aos68k -O2 risergamepad.c -o risergamepad
+vc +aos68k -O2 risergamepad.c risergamepad-gui.c -o risergamepad
 echo "Built: $(pwd)/risergamepad ($(wc -c < risergamepad) bytes)"
 file risergamepad
