@@ -32,6 +32,13 @@ typedef short              BOOL;
 
 #define SIGBREAKF_CTRL_C 0x00001000
 
+/* exec/memory.h MEMF_* flags for AllocMem / AllocVec. */
+#define MEMF_ANY            0x00000000L
+#define MEMF_PUBLIC         0x00000001L
+#define MEMF_CHIP           0x00000002L
+#define MEMF_FAST           0x00000004L
+#define MEMF_CLEAR          0x00010000L
+
 /* Forward declarations -- callers don't access fields. */
 struct Library;
 struct DosLibrary;
@@ -176,6 +183,43 @@ struct IntuiMessage {
 /* Window Types */
 #define WBENCHSCREEN        0x0001
 #define CUSTOMSCREEN        0x000F
+
+/* intuition/screens.h NewScreen */
+struct NewScreen {
+    WORD            LeftEdge, TopEdge;
+    WORD            Width, Height;
+    WORD            Depth;
+    UBYTE           DetailPen, BlockPen;
+    UWORD           ViewModes;
+    UWORD           Type;
+    struct TextAttr *Font;
+    UBYTE          *DefaultTitle;
+    struct Gadget  *Gadgets;
+    struct BitMap  *CustomBitMap;
+};
+
+/* ViewPort is in graphics.library but we access it via offset 44 inside
+ * Screen (where the embedded ViewPort lives, per official intuition.h).
+ * That's the only thing we need for SetRGB4 / LoadRGB4. */
+struct ViewPort;
+#define SCREEN_VIEWPORT_OFFSET  44
+
+/* graphics/view.h ViewMode bits */
+#define V_HIRES             0x8000
+#define V_LACE              0x0004
+#define V_PAL               0x0008
+
+/* graphics/gfx.h BitMap, layout matches the official struct so we can
+ * point its Planes[] at our own static bitplane data. */
+typedef UBYTE *PLANEPTR;
+struct BitMap {
+    UWORD     BytesPerRow;
+    UWORD     Rows;
+    UBYTE     Flags;
+    UBYTE     Depth;
+    UWORD     Pad;
+    PLANEPTR  Planes[8];
+};
 
 /* graphics/rastport.h draw modes for SetDrMd() */
 #define JAM1                0

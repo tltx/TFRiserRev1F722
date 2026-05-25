@@ -906,9 +906,10 @@ int main(int argc, char *argv[])
         return cmd_raw();
     }
 
-    if (argc == 2 && strcmp(argv[1], "gui") == 0) {
-        extern int cmd_gui(int pad);
-        return cmd_gui(1);
+    if (argc >= 2 && strcmp(argv[1], "gui") == 0) {
+        extern int cmd_gui(int pad, int demo);
+        int demo = (argc >= 3 && strcmp(argv[2], "demo") == 0);
+        return cmd_gui(1, demo);
     }
 
     if (argc == 2 && strcmp(argv[1], "learn-raw") == 0) {
