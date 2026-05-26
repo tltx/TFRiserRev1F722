@@ -101,8 +101,9 @@ int cmd_gui(int pad, int demo);
 /* Overlay-pen palette overrides applied after LoadRGB4. */
 static void install_overlay_pens(struct ViewPort *vp)
 {
-    /* Bright magenta-ish highlight ring (very visible over grey body) */
-    SetRGB4(vp, (LONG)PEN_HIGHL, (ULONG)15, (ULONG)15, (ULONG)0);
+    /* Bright purple highlight ring -- magenta-leaning (max red, less
+     * blue) so it pops against the dark blue-grey controller body. */
+    SetRGB4(vp, (LONG)PEN_HIGHL, (ULONG)15, (ULONG)0, (ULONG)12);
     /* Dark navy strip behind prompt text */
     SetRGB4(vp, (LONG)PEN_TXT_BG, (ULONG)1, (ULONG)1, (ULONG)3);
     SetRGB4(vp, (LONG)PEN_TXT_FG, (ULONG)15, (ULONG)15, (ULONG)15);
@@ -159,8 +160,8 @@ static const pad_button_t pad_buttons[] = {
     { 1, 521,  77, 16,   0,0,0,0, 0, PAD_RED,    0L },
     { 1, 580,  69, 12,   0,0,0,0, 0, PAD_BLUE,   0L },
     /* Shoulder areas (RW left, FF right) along the top edge */
-    { 0, 0,0,0,  74,  0,  110, 8, 0, PAD_RW, "<<" },
-    { 0, 0,0,0,  453,  0,  110, 8, 0, PAD_FF, ">>" },
+    { 0, 0,0,0,  74,  2,  110, 6, 0, PAD_RW, "<<" },
+    { 0, 0,0,0,  453,  2,  110, 6, 0, PAD_FF, ">>" },
     /* PLAY -- the small horizontal slot on the centre bridge. */
     { 0, 0,0,0,  350, 93,  100, 12, 0, PAD_PLAY, "PLAY" },
 };
@@ -279,14 +280,9 @@ static void draw_chrome(struct RastPort *rp, int pad,
 
     SetDrMd(rp, (LONG)JAM1);
 
-    /* Title line */
-    if (pad == 1) {
-        draw_label(rp, PEN_TXT_FG, 8, CD32_BMP_H + BMP_Y + 12,
-                   "Mapping the JOYSTICK-port gamepad");
-    } else {
-        draw_label(rp, PEN_TXT_FG, 8, CD32_BMP_H + BMP_Y + 12,
-                   "Mapping the MOUSE-port gamepad");
-    }
+    /* Title line (pad is unused now -- same title for either port). */
+    draw_label(rp, PEN_TXT_FG, 8, CD32_BMP_H + BMP_Y + 12,
+               "Map your USB gamepad buttons to the CD32 buttons");
     if (prompt) draw_label(rp, PEN_TXT_FG, 8, CD32_BMP_H + BMP_Y + 30, prompt);
     if (hint)   draw_label(rp, PEN_TXT_FG, 8, CD32_BMP_H + BMP_Y + 48, hint);
 }

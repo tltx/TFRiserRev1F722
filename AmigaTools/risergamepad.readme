@@ -1,0 +1,240 @@
+============================================================================
+
+                      T F   C D 3 2   R I S E R
+                     USB Input - Read Me / Guide
+
+============================================================================
+
+  Use modern USB gamepads, keyboards and mice on your Amiga / CD32.
+  This file explains how the USB feature works, what hardware is
+  compatible, how to choose a gamepad, and how to use the "risergamepad"
+  configuration tool.
+
+  Updated: 26-May-2026
+
+
+----------------------------------------------------------------------------
+  1.  WHAT THE RISER DOES
+----------------------------------------------------------------------------
+
+  The riser carries a small USB host (an STM32 microcontroller).  It reads
+  ordinary USB input devices and feeds the Amiga exactly the signals it
+  already understands:
+
+    *  a USB gamepad / joystick  ->  the Amiga joystick (and CD32) port
+    *  a USB mouse               ->  the Amiga mouse port
+    *  a USB keyboard            ->  the Amiga keyboard
+
+  To the Amiga it all looks like the genuine article.  There is NO driver
+  to install and nothing to run at boot: it works in Workbench, in the
+  early boot menu, and in games that bang the hardware directly, because
+  the riser presents real joystick / mouse / keyboard signals.
+
+  The riser has TWO USB ports.  How devices are assigned:
+
+    *  One gamepad            ->  joystick port  (the port marked "1"
+                                   on a CD32)
+    *  A second gamepad       ->  mouse port      (the port marked "2")
+    *  A USB mouse            ->  mouse port  (a mouse always wins the
+                                   mouse port over a 2nd gamepad)
+    *  A USB keyboard         ->  acts as the Amiga keyboard
+
+  A single mapped gamepad can act as BOTH a normal Amiga joystick (up /
+  down / left / right + fire) AND a full 7-button CD32 controller (the
+  Red / Blue / Green / Yellow buttons plus Play and the two shoulder
+  buttons).  Games get whichever they ask for.
+
+
+----------------------------------------------------------------------------
+  2.  PER-GAMEPAD PROFILES
+----------------------------------------------------------------------------
+
+  Every gamepad reports a USB identity (its "VID:PID").  The riser stores
+  a button mapping for each pad keyed to that identity:
+
+    *  Map your pad once (see section 5).
+    *  Unplug it, plug it back in - into EITHER port - and its mapping
+       loads automatically.
+    *  Up to 4 different gamepads are remembered, even after power-off.
+
+  So you can keep several pads and each just works when plugged in.
+
+
+----------------------------------------------------------------------------
+  3.  COMPATIBLE USB HARDWARE
+----------------------------------------------------------------------------
+
+  The riser speaks USB HID - the standard "Human Interface Device" class
+  that nearly all plain gamepads, keyboards and mice use.
+
+  WORKS:
+
+    *  USB HID gamepads and joysticks (digital D-pad and/or analog
+       sticks; up to 12 buttons can be mapped).
+    *  USB HID keyboards.
+    *  USB HID mice.
+    *  Wireless pads/keyboards/mice that come with their own little USB
+       dongle - the dongle is just a HID device to the riser.
+    *  Analog sticks: they are read and converted to the eight digital
+       joystick directions, so an analog pad works (as a digital one).
+
+  DOES NOT WORK:
+
+    *  USB hubs.  There is no hub support - plug devices straight into
+       the two ports, one device per port.
+    *  Anything that is not an input device: USB sticks, audio, printers,
+       Wi-Fi, etc.  Only keyboards, mice and gamepads are handled.
+    *  Bluetooth-only pads with no USB dongle (the riser has no
+       Bluetooth radio).
+
+  THE XBOX / XINPUT CATCH (important):
+
+    Xbox 360 / Xbox One style controllers, and pads switched into
+    "XInput" / "X" mode, are NOT standard HID - they use Microsoft's
+    XInput protocol.  These are unreliable on the riser and are best
+    avoided.  The firmware has work-arounds for a few specific adapters,
+    but you should not count on an XInput pad working.
+
+    If your pad has a mode switch, use the HID / "DirectInput" / "D" /
+    PC mode, NOT the X mode.
+
+
+----------------------------------------------------------------------------
+  4.  CHOOSING A USB GAMEPAD
+----------------------------------------------------------------------------
+
+  A few things to look for:
+
+    *  HID / DirectInput.  Pick a pad that talks plain USB HID.  Cheap
+       "USB joystick" pads, retro-style pads, and many name-brand pads
+       in their DirectInput mode all qualify.
+
+    *  Mode switch.  Many modern pads (e.g. 8BitDo and similar) can be
+       toggled between modes.  Choose DirectInput / "D" / PC mode.  The
+       Nintendo Switch and Android modes are usually HID too and tend to
+       work; XInput mode does not.
+
+    *  A real digital D-pad is ideal.  Amiga games expect digital
+       directions, and a crisp D-pad feels best.  Analog-only sticks
+       work but are less precise for old digital games.
+
+    *  Enough buttons.  The CD32 layout has seven buttons (Red, Blue,
+       Green, Yellow, Play, Rewind, Forward) plus the standard fire.
+       A pad with 6 or more face/shoulder buttons lets you map them all.
+
+    *  Bus power.  The pad is powered from the Amiga through the riser.
+       Ordinary bus-powered pads and dongles are fine; avoid devices
+       that expect a powered hub or draw a lot of current.
+
+  If a pad enumerates but the buttons come out in a strange order, you
+  can always map it by hand - and for really odd pads there is a
+  raw-discovery tool (see "learn-raw" below).
+
+
+----------------------------------------------------------------------------
+  5.  THE "risergamepad" TOOL
+----------------------------------------------------------------------------
+
+  "risergamepad" is the Amiga-side utility for checking status and
+  mapping your pad's buttons to the Amiga / CD32 functions.  Run it from
+  a Shell, or double-click its icon (the icon opens the graphical
+  mapper).
+
+  COMMON COMMANDS
+
+    risergamepad                 Show status and the current mapping of
+                                 the connected gamepad(s).
+
+    risergamepad learn           Map your pad's buttons, step by step,
+                                 from the Shell.
+
+    risergamepad gui             Map your pad using the graphical screen:
+                                 a CD32 controller is drawn and a purple
+                                 marker ring highlights the button to set;
+                                 press the matching button on your pad.
+
+    risergamepad watch           Show live button presses (handy to see
+                                 which physical button is which).
+
+  HOW MAPPING WORKS
+
+    For each Amiga / CD32 function the tool asks you to press a button:
+
+      Red (= primary fire) is required - every joystick has at least one
+      button.  The rest (Blue, Green, Yellow, Play, Rewind, Forward, and
+      the 2nd/3rd fire buttons) are optional; skip any you do not want.
+
+    The mapping is saved automatically and tied to that pad's USB
+    identity, so it loads by itself next time (see section 2).
+
+  LESS COMMON COMMANDS
+
+    risergamepad ports           Short one-screen status.
+    risergamepad watch-ports     Live status, refreshing.
+    risergamepad debug           USB-host diagnostics (for when a device
+                                 will not enumerate).
+    risergamepad watch-debug     Live diagnostics.
+    risergamepad raw             Show raw HID report bytes (developer).
+    risergamepad learn-raw       Discover the raw bytes/bits for a pad
+                                 that does not auto-detect, then map by
+                                 raw bit.
+    risergamepad help            Full command list.
+
+  By default "learn" and "watch" work on the joystick-port pad.  Append
+  "2" (e.g. "risergamepad learn 2") to target the mouse-port pad instead.
+
+  NOTE: All commands except "help" and "gui demo" need the riser
+  hardware present.  If the board is not detected the Shell prints a
+  short message and the GUI shows "TF CD32 Riser not detected".  Use
+  "risergamepad gui demo" to see the graphical mapper with no hardware.
+
+
+----------------------------------------------------------------------------
+  6.  QUICK START
+----------------------------------------------------------------------------
+
+    1.  Plug your USB gamepad into either port on the riser.
+    2.  Run  risergamepad        to confirm it is detected.
+    3.  Run  risergamepad gui    (or  risergamepad learn ) and follow
+        the prompts to map the buttons.
+    4.  Done.  The mapping is saved and re-loads whenever you plug that
+        pad in.
+
+
+----------------------------------------------------------------------------
+  7.  TROUBLESHOOTING
+----------------------------------------------------------------------------
+
+    "TF CD32 Riser not detected"
+        The tool cannot see the board.  Check that the riser is fitted
+        and seated, and that you are running this on the machine it is
+        installed in.
+
+    Pad is plugged in but nothing happens
+        Run  risergamepad watch .  If no bits change when you press
+        buttons, the pad is probably in XInput mode - switch it to
+        DirectInput / "D" / PC mode (see section 3).
+
+    Pad seems dead until you touch it
+        Some pads send nothing until the first input.  Press any button
+        once to wake it, then try again.
+
+    Buttons are detected but in the wrong order
+        Just re-map with  risergamepad learn  or  risergamepad gui .
+        For stubborn pads use  risergamepad learn-raw .
+
+
+----------------------------------------------------------------------------
+  8.  TECHNICAL NOTES
+----------------------------------------------------------------------------
+
+    *  The riser is memory-mapped on the Amiga bus at $00BA0000.
+    *  USB is handled by an STM32F722 HID host with two host ports
+       (one high-speed, one full-speed).
+    *  Only the USB HID class is implemented (keyboard, mouse, gamepad);
+       there is no hub, mass-storage or other class support.
+    *  Up to 12 USB buttons plus four directions can be mapped per pad.
+    *  Pad profiles are stored in battery-backed registers and keyed by
+       USB VID:PID.
+
+============================================================================
