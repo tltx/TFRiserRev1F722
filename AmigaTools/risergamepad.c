@@ -99,6 +99,27 @@ static const char *slot_name[SLOTS] = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Hardware presence check.                                            */
+/* ------------------------------------------------------------------ */
+
+/* The riser maps a fixed sentinel byte at $16 that reads back 0xA5
+ * whenever the Zorro/STM32 bus path is alive.  With no board fitted the
+ * address space floats and reads come back as 0xFF, so a single read
+ * tells us whether there is a riser to talk to at all. */
+static int riser_present(void)
+{
+    return riser[SENTINEL_REG] == 0xA5;
+}
+
+static void riser_not_found(void)
+{
+    printf("TF CD32 Riser not detected.\n\n");
+    printf("No riser board responded at $%06lX.  Check that the board is\n"
+           "fitted and that you are running this on the Amiga/CD32 it is\n"
+           "installed in.\n", RISER_BASE_ADDR);
+}
+
+/* ------------------------------------------------------------------ */
 /* Slot/register helpers.                                              */
 /* ------------------------------------------------------------------ */
 
@@ -819,6 +840,31 @@ static void usage(void)
 
 int main(int argc, char *argv[])
 {
+    /* Launched from Workbench (double-clicked icon): the startup code
+     * calls us with argc == 0 and no console attached.  There's nothing
+     * useful to print to a non-existent shell, so go straight to the
+     * graphical mapper -- which opens its own screen and shows the
+     * "riser not detected" message there if the board is absent. */
+    if (argc == 0) {
+        extern int cmd_gui(int pad, int demo);
+        return cmd_gui(1, 0);
+    }
+
+    /* Every command except `help` and `gui` reads the riser's
+     * registers, so bail early with a clear message if the board isn't
+     * there (instead of printing a screenful of 0xFF).  `gui` runs its
+     * own detection -- it can operate in hardware-free demo mode and
+     * shows the not-detected message on its own screen. */
+    {
+        int is_help = (argc == 2 && (strcmp(argv[1], "help") == 0
+                                     || strcmp(argv[1], "--help") == 0));
+        int is_gui  = (argc >= 2 && strcmp(argv[1], "gui") == 0);
+        if (!is_help && !is_gui && !riser_present()) {
+            riser_not_found();
+            return 1;
+        }
+    }
+
     if (argc == 1) {
         /* Default invocation: status + brief profile explanation
          * + tip pointing at `learn`.  This is the main user-facing

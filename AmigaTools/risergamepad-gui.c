@@ -51,6 +51,7 @@ extern const unsigned char cd32_plane3[];
 #define PAD1_LIVE_EXTRA  0x11
 #define PAD2_LIVE_DATA   0x12
 #define PAD2_LIVE_EXTRA  0x13
+#define SENTINEL_REG     0x16   /* reads 0xA5 when the riser bus path is alive */
 static volatile unsigned char * const riser_gui =
     (volatile unsigned char *)RISER_BASE_ADDR;
 
@@ -324,13 +325,63 @@ static unsigned char gui_reg_addr(int pad, int slot)
     return (unsigned char)((pad == 1 ? PAD1_REG_BASE : PAD2_REG_BASE) + slot);
 }
 
-/* Wait for a button press, a skip combo, or an exit combo. */
-static int gui_capture_button(struct Window *win, int pad, int demo)
+/* Restore the small bitmap area covered by a button's highlight ring
+ * (so the next draw_pad_button(highlighted=1) call cleanly redraws on
+ * top of the photo instead of stacking on a stale ring). */
+static void erase_button_overlay(struct RastPort *rp,
+                                 const pad_button_t *b)
+{
+    WORD x1, y1, x2, y2;
+    if (b->is_round) {
+        LONG ry = b->r;
+        LONG rx = ry * 2;
+        x1 = (WORD)(b->cx - rx - 3);
+        y1 = (WORD)(b->cy - ry - 3 + BMP_Y);
+        x2 = (WORD)(b->cx + rx + 3);
+        y2 = (WORD)(b->cy + ry + 3 + BMP_Y);
+    } else {
+        x1 = (WORD)(b->x - 3);
+        y1 = (WORD)(b->y - 3 + BMP_Y);
+        x2 = (WORD)(b->x + b->w + 3);
+        y2 = (WORD)(b->y + b->h + 3 + BMP_Y);
+    }
+    if (x1 < 0) x1 = 0;
+    if (y1 < BMP_Y) y1 = BMP_Y;
+    if (x2 >= SCR_W) x2 = SCR_W - 1;
+    if (y2 >= BMP_Y + CD32_BMP_H) y2 = (WORD)(BMP_Y + CD32_BMP_H - 1);
+    /* Source coords are in bitmap-local space (no BMP_Y), destination
+     * in screen space. */
+    BltBitMapRastPort(&cd32_bm,
+                      (LONG)x1, (LONG)(y1 - BMP_Y),
+                      rp, (LONG)x1, (LONG)y1,
+                      (LONG)(x2 - x1 + 1), (LONG)(y2 - y1 + 1),
+                      (ULONG)0xC0);
+}
+
+/* Wait for a button press, a skip combo, or an exit combo.  When
+ * allow_skip == 0 the D-pad DOWN combo is ignored so the caller can
+ * force a particular slot (e.g. RED / fire1) to be mapped.  hl_slot
+ * is the slot currently being prompted -- in non-demo mode we slowly
+ * flash its highlight ring to draw attention. */
+static int gui_capture_button(struct Window *win, int pad, int demo,
+                              int allow_skip, int hl_slot)
 {
     unsigned int prev_btns = 0;
     int stable = 0;
     int candidate = -1;
-    LONG demo_ticks = 60;  /* ~1.2 s per slot at 50 Hz */
+    LONG demo_ticks = 60;     /* ~1.2 s per slot at 50 Hz */
+    LONG flash_ticks = 30;    /* ~0.6 s on / 0.6 s off */
+    int  show_ring  = 1;
+    const pad_button_t *hl_btn = 0L;
+    {
+        int j;
+        for (j = 0; j < (int)N_PAD_BUTTONS; j++) {
+            if (pad_buttons[j].slot == hl_slot) {
+                hl_btn = &pad_buttons[j];
+                break;
+            }
+        }
+    }
 
     for (;;) {
         struct IntuiMessage *msg;
@@ -353,13 +404,23 @@ static int gui_capture_button(struct Window *win, int pad, int demo)
             continue;
         }
 
+        /* Slowly blink the prompt button's highlight ring. */
+        if (hl_btn) {
+            if (--flash_ticks <= 0) {
+                show_ring = !show_ring;
+                flash_ticks = 30;
+                erase_button_overlay(win->RPort, hl_btn);
+                if (show_ring) draw_pad_button(win->RPort, hl_btn, 1);
+            }
+        }
+
         w    = gui_read_live(pad);
         dpad = w & MASK_DPAD;
         btns = w & MASK_BUTTONS;
 
         if ((dpad & MASK_LEFT) && btns) return CAP_ABORT;
 
-        if ((dpad & MASK_DOWN) && !btns) {
+        if (allow_skip && (dpad & MASK_DOWN) && !btns) {
             while (gui_read_live(pad) & MASK_DPAD) {
                 if (CheckSignal(SIGBREAKF_CTRL_C)) return CAP_ABORT;
                 Delay((LONG)1);
@@ -405,7 +466,7 @@ static void gui_verify_mode(struct Window *win, int pad,
     draw_pad(win, pad, -1,
              demo ? "Demo:  buttons light up in sequence."
                   : "Saved!  Press buttons -- they light up if mapped correctly.",
-             demo ? "press close gadget or Q to exit"
+             demo ? "press Q to exit"
                   : "LEFT + button = exit");
 
     while (!done) {
@@ -430,7 +491,7 @@ static void gui_verify_mode(struct Window *win, int pad,
                 draw_body(rp);
                 draw_chrome(rp, pad,
                     "Demo:  buttons light up in sequence.",
-                    "press close gadget or Q to exit");
+                    "press Q to exit");
                 for (i = 0; i < (int)N_PAD_BUTTONS; i++) {
                     int hl = (pad_buttons[i].slot == hl_slot);
                     draw_pad_button(rp, &pad_buttons[i], hl);
@@ -466,28 +527,81 @@ static void gui_verify_mode(struct Window *win, int pad,
     }
 }
 
+/* Same sentinel check as the command-line tool: $16 reads 0xA5 only
+ * when the riser's bus path is alive; an absent board floats to 0xFF. */
+static int gui_riser_present(void)
+{
+    return riser_gui[SENTINEL_REG] == 0xA5u;
+}
+
+/* Show a "board not found" message on the GUI screen and wait for the
+ * user to quit.  Used in non-demo mode when no riser responds. */
+static void gui_show_no_hardware(struct Window *win)
+{
+    struct RastPort *rp = win->RPort;
+
+    draw_body(rp);
+    filled_rect(rp, PEN_TXT_BG, 0, CD32_BMP_H + BMP_Y, SCR_W - 1, SCR_H - 1);
+    SetDrMd(rp, (LONG)JAM1);
+    draw_label(rp, PEN_TXT_FG, 8, CD32_BMP_H + BMP_Y + 12,
+               "TF CD32 Riser not detected.");
+    draw_label(rp, PEN_TXT_FG, 8, CD32_BMP_H + BMP_Y + 30,
+               "No riser board responded -- check that it is fitted.");
+    draw_label(rp, PEN_TXT_FG, 8, CD32_BMP_H + BMP_Y + 48,
+               "press Q to exit");
+
+    for (;;) {
+        struct IntuiMessage *msg;
+        while ((msg = (struct IntuiMessage*)GetMsg(win->UserPort)) != 0L) {
+            ULONG class = msg->Class;
+            UWORD code  = msg->Code;
+            ReplyMsg((struct Message*)msg);
+            if (class == IDCMP_CLOSEWINDOW) return;
+            if (class == IDCMP_VANILLAKEY
+                && (code == 'q' || code == 'Q' || code == 27)) return;
+        }
+        if (CheckSignal(SIGBREAKF_CTRL_C)) return;
+        Delay((LONG)5);
+    }
+}
+
 static int cmd_gui_run(struct Window *win, int pad, int demo)
 {
     unsigned char new_src[SLOTS];
     int i, slot;
     char prompt[80];
-    const char *hint = demo
+    const char *hint_skip = demo
         ? "demo mode -- auto-advancing"
         : "DOWN = skip      LEFT + button = exit";
+    const char *hint_required = demo
+        ? "demo mode -- auto-advancing"
+        : "this button is required      LEFT + button = exit";
+
+    /* No live hardware to map against (and not faking it with demo
+     * mode): tell the user on-screen rather than reading 0xFF garbage. */
+    if (!demo && !gui_riser_present()) {
+        gui_show_no_hardware(win);
+        return 1;
+    }
 
     for (i = 0; i < SLOTS; i++) new_src[i] = UNMAPPED;
 
     for (i = 0; i < (int)N_PROMPTS; i++) {
         int captured;
+        int allow_skip;
         slot = gui_prompt_order[i];
+        /* RED is fire1 -- every gamepad / joystick has at least one
+         * button, so we never let the user leave it unmapped. */
+        allow_skip = (slot != PAD_RED);
 
         sprintf(prompt, demo
                 ? "Demo:  highlighting the %s button."
                 : "Press the %s button on your gamepad.",
                 gui_slot_name(slot));
-        draw_pad(win, pad, slot, prompt, hint);
+        draw_pad(win, pad, slot, prompt,
+                 allow_skip ? hint_skip : hint_required);
 
-        captured = gui_capture_button(win, pad, demo);
+        captured = gui_capture_button(win, pad, demo, allow_skip, slot);
         if (captured == CAP_ABORT) return 1;
         if (captured == CAP_SKIP) continue;
 
