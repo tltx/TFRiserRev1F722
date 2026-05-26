@@ -357,49 +357,28 @@ int main(void)
 		if (usb->gamepad1 != NULL) {
 
 			//__disable_irq();
-			joy1datH = 0;
-			joy1datL = 0;
-			joy1datHDelta = 0;
-			joy1datLDelta = 0;
-
 			uint16_t gp1w = gp_combine(usb->gamepad1->gamepad_data,
 					usb->gamepad1->gamepad_extraBtn);
 
-			if (usb->gamepad1->gamepad_data >> 1 & 0x1)
-			{
-				joy1datH = 0x3;
-				joy1datHDelta = 0x3;
-			}
-			if (usb->gamepad1->gamepad_data >> 3 & 0x1)
-			{
-				joy1datH = 0x1;
-				joy1datHDelta = 0x1;
-			}
-			if (usb->gamepad1->gamepad_data >> 1 & 0x1
-					&& usb->gamepad1->gamepad_data >> 3 & 0x1)
-			{
-				joy1datH = 0x2;
-				joy1datHDelta = 0x2;
-
-			}
-			if (usb->gamepad1->gamepad_data & 0x1)
-			{
-				joy1datL = 0x3;
-				joy1datLDelta = 0x3;
-
-			}
-
-			if (usb->gamepad1->gamepad_data >> 2 & 0x1)
-			{
-				joy1datL = 0x1;
-				joy1datLDelta = 0x1;
-			}
-			if (usb->gamepad1->gamepad_data & 0x1
-					&& usb->gamepad1->gamepad_data >> 2 & 0x1)
-			{
-				joy1datL = 0x2;
-				joy1datLDelta = 0x2;
-			}
+			/* Decode the D-pad into locals and publish each JOYDAT byte with
+			 * a single store.  The Amiga reads JOY1DAT from EXTI0_IRQHandler,
+			 * which can preempt this loop; clearing joy1datH/L to 0 and then
+			 * setting them in separate steps lets a bus read catch a transient
+			 * neutral value -- which a game's menu reads as release+re-press,
+			 * running the selection down the list.  Compute once, store once,
+			 * exactly as the CD32 button word below already does. */
+			uint8_t gd1 = usb->gamepad1->gamepad_data;
+			int8_t njH = 0, njL = 0;
+			if (gd1 >> 1 & 0x1)                       njH = 0x3; /* left */
+			if (gd1 >> 3 & 0x1)                       njH = 0x1; /* up */
+			if ((gd1 >> 1 & 0x1) && (gd1 >> 3 & 0x1)) njH = 0x2; /* left+up */
+			if (gd1 & 0x1)                            njL = 0x3; /* right */
+			if (gd1 >> 2 & 0x1)                       njL = 0x1; /* down */
+			if ((gd1 & 0x1) && (gd1 >> 2 & 0x1))      njL = 0x2; /* right+down */
+			joy1datHDelta = njH;
+			joy1datLDelta = njL;
+			joy1datH = njH;
+			joy1datL = njL;
 			if ((POTGORH >> 5) & 1U) { //check if register is output enable
 				if (gp_btn(gp1w, gamepad1_map.src[GMAP_FIRE2])) {
 					POTGORH &= ~(1UL << 4);
@@ -446,54 +425,23 @@ int main(void)
 		if (usb->gamepad2 != NULL && usb->mouseDetected != 1) //make sure mouse doesn't colide with controller
 				{
 			//__disable_irq();
-			joy0datH = 0;
-			joy0datL = 0;
-
-			joy0datHDelta = 0;
-			joy0datLDelta = 0;
-
 			uint16_t gp2w = gp_combine(usb->gamepad2->gamepad_data,
 					usb->gamepad2->gamepad_extraBtn);
 
-			if (usb->gamepad2->gamepad_data >> 1 & 0x1)
-			{
-				joy0datH = 0x03;
-				joy0datHDelta = 0x03;
-			}
-
-			if (usb->gamepad2->gamepad_data >> 3 & 0x1)
-			{
-				joy0datH = 0x01;
-				joy0datHDelta = 0x01;
-
-			}
-			if (usb->gamepad2->gamepad_data >> 1 & 0x1
-					&& usb->gamepad2->gamepad_data >> 3 & 0x1)
-			{
-				joy0datH = 0x02;
-				joy0datHDelta = 0x02;
-
-			}
-
-			if (usb->gamepad2->gamepad_data & 0x1)
-			{
-				joy0datL = 0x03;
-				joy0datLDelta = 0x03;
-			}
-
-
-			if (usb->gamepad2->gamepad_data >> 2 & 0x1)
-			{
-				joy0datL = 0x01;
-				joy0datLDelta = 0x01;
-			}
-			if (usb->gamepad2->gamepad_data & 0x1
-					&& usb->gamepad2->gamepad_data >> 2 & 0x1)
-			{
-				joy0datL = 0x02;
-				joy0datLDelta = 0x02;
-
-			}
+			/* Same single-store publish as gamepad1 -- avoids the neutral-
+			 * flicker race when JOY0DAT is read from the bus IRQ. */
+			uint8_t gd2 = usb->gamepad2->gamepad_data;
+			int8_t n0H = 0, n0L = 0;
+			if (gd2 >> 1 & 0x1)                       n0H = 0x03; /* left */
+			if (gd2 >> 3 & 0x1)                       n0H = 0x01; /* up */
+			if ((gd2 >> 1 & 0x1) && (gd2 >> 3 & 0x1)) n0H = 0x02; /* left+up */
+			if (gd2 & 0x1)                            n0L = 0x03; /* right */
+			if (gd2 >> 2 & 0x1)                       n0L = 0x01; /* down */
+			if ((gd2 & 0x1) && (gd2 >> 2 & 0x1))      n0L = 0x02; /* right+down */
+			joy0datHDelta = n0H;
+			joy0datLDelta = n0L;
+			joy0datH = n0H;
+			joy0datL = n0L;
 			if ((POTGORH >> 1) & 1U) { //check if register is output enable
 				if (gp_btn(gp2w, gamepad2_map.src[GMAP_FIRE2])) {
 					POTGORH &= ~(1UL << 0);
