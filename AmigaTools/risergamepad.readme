@@ -109,10 +109,16 @@
        "USB joystick" pads, retro-style pads, and many name-brand pads
        in their DirectInput mode all qualify.
 
-    *  Mode switch.  Many modern pads (e.g. 8BitDo and similar) can be
-       toggled between modes.  Choose DirectInput / "D" / PC mode.  The
-       Nintendo Switch and Android modes are usually HID too and tend to
-       work; XInput mode does not.
+    *  Mode switch.  If your pad has a switch for its USB mode, choose
+       the HID / DirectInput / "D" / PC mode and avoid XInput / "X".
+
+    *  Tested so far.  Compatibility varies a lot between pads - even
+       within one brand - so treat any pad as "try it and see".  Known
+       results on this hardware:
+         - 8BitDo SFC30, connected by USB CABLE: works.
+         - "MR1809WL" wireless pad (dongle), in D-input mode: works.
+         - 8BitDo PC Engine (PCE) pad: did NOT work.
+         - 8BitDo NeoGeo pad: did NOT work.
 
     *  A real digital D-pad is ideal.  Amiga games expect digital
        directions, and a crisp D-pad feels best.  Analog-only sticks
