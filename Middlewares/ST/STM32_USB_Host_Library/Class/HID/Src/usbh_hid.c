@@ -345,6 +345,13 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 		  		{
 		  			uint16_t vid = phost->device.DevDesc.idVendor;
 		  			uint16_t pid = phost->device.DevDesc.idProduct;
+		  			if (vid == 0x057E && pid == 0x2009) {
+		  				/* Nintendo Switch Pro Controller (wired USB): enumerates as
+		  				 * HID but uses a Nintendo-specific protocol.  Force the
+		  				 * gamepad path so the bring-up handshake + 0x30 decoder
+		  				 * (usbh_hid_gamepad.c) run. */
+		  				HID_Handle->HID_Desc.RptDesc.type = REPORT_TYPE_JOYSTICK;
+		  			}
 		  			if ((vid == 0x6666 && pid == 0x0667)) {
 		  				/* WiseGroup SmartJoy PSX -> USB adapter */
 		  				HID_Handle->HID_Desc.RptDesc.type = REPORT_TYPE_JOYSTICK;

@@ -154,6 +154,98 @@ static uint16_t collect_bits(uint8_t *p, uint16_t offset, uint8_t size, int is_s
 }
 
 
+/* ------------------------------------------------------------------ *
+ * Nintendo Switch Pro Controller (VID 057E / PID 2009) over USB.
+ *
+ * It enumerates as a HID device but streams no usable input until the
+ * host runs a Nintendo-specific bring-up handshake on the interrupt
+ * OUT endpoint.  usbh_hid.c forces this VID/PID onto the gamepad path
+ * so USBH_HID_GamepadDecode() runs every poll; from there we drive the
+ * handshake (here) and, once the pad emits its 0x30 "standard full"
+ * reports, decode them into the Amiga layout further down.
+ *
+ * First cut, validated only by review -- iterate with `risergamepad raw`,
+ * which shows the bytes the pad is actually sending.
+ * ------------------------------------------------------------------ */
+#define SWITCH_PRO_VID  0x057EU
+#define SWITCH_PRO_PID  0x2009U
+
+/* Free-running 1 ms tick for handshake pacing.  phost->Timer proved
+ * unreliable here -- it stops advancing shortly after connect, which
+ * froze the handshake at a random step; SysTick keeps running. */
+uint32_t HAL_GetTick(void);
+
+/* Per-host handshake state (index by phost->id & 1). */
+static uint8_t  pro_step[2];     /* position in the bring-up sequence   */
+static uint8_t  pro_done[2];     /* set once 0x30 reports are arriving  */
+static uint8_t  pro_pkt[2];      /* rolling packet counter for 0x01 cmd */
+static uint32_t pro_next[2];     /* phost->Timer at which to send next  */
+static uint8_t  pro_out[2][12];  /* OUT buffer (must outlive transfer)  */
+
+/* Five fixed bring-up commands, sent once each in order:
+ *   80 01 status, 80 02 handshake, 80 03 baud, 80 02 handshake,
+ *   80 04 force USB / disable the HID timeout.                         */
+static const uint8_t pro_cmd80[5][2] = {
+  {0x80, 0x01}, {0x80, 0x02}, {0x80, 0x03}, {0x80, 0x02}, {0x80, 0x04}
+};
+
+static void USBH_HID_ProReset(uint8_t id)
+{
+  id &= 1U;
+  pro_step[id] = 0U;
+  pro_done[id] = 0U;
+  pro_pkt[id]  = 0U;
+  pro_next[id] = 0U;
+}
+
+static void USBH_HID_ProHandshake(USBH_HandleTypeDef *phost,
+                                  HID_HandleTypeDef *h)
+{
+  uint8_t id = phost->id & 1U;
+
+  if (pro_done[id]) return;
+  if (h->OutPipe == 0U) return;                          /* no OUT EP */
+
+  /* CRITICAL: never re-arm the OUT channel while the previous transfer
+   * is still in flight.  Submitting on a busy host channel corrupts its
+   * state and HardFaults the OTG core (all USB input dies).  Wait for it
+   * to return to DONE/IDLE -- this also gives the controller proper
+   * one-command-at-a-time flow control. */
+  {
+    USBH_URBStateTypeDef ost = USBH_LL_GetURBState(phost, h->OutPipe);
+    if (ost != USBH_URB_DONE && ost != USBH_URB_IDLE) return;
+  }
+  if ((int32_t)(HAL_GetTick() - pro_next[id]) < 0) return; /* min spacing */
+
+  if (pro_step[id] < 5U) {
+    pro_out[id][0] = pro_cmd80[pro_step[id]][0];
+    pro_out[id][1] = pro_cmd80[pro_step[id]][1];
+    USBH_InterruptSendData(phost, pro_out[id], 2U, h->OutPipe);
+    pro_step[id]++;
+    pro_next[id] = HAL_GetTick() + 40U;                  /* 40 ms apart */
+  } else {
+    /* Set input report mode to 0x30 (standard full @ 60 Hz), carried in
+     * a rumble+subcommand (0x01) report.  Re-sent every 250 ms until the
+     * decoder sees 0x30 reports and sets pro_done. */
+    pro_out[id][0]  = 0x01U;             /* rumble + subcommand report  */
+    pro_out[id][1]  = pro_pkt[id];       /* rolling packet number       */
+    pro_out[id][2]  = 0x00U;             /* neutral rumble (left)       */
+    pro_out[id][3]  = 0x01U;
+    pro_out[id][4]  = 0x40U;
+    pro_out[id][5]  = 0x40U;
+    pro_out[id][6]  = 0x00U;             /* neutral rumble (right)      */
+    pro_out[id][7]  = 0x01U;
+    pro_out[id][8]  = 0x40U;
+    pro_out[id][9]  = 0x40U;
+    pro_out[id][10] = 0x03U;             /* subcommand: set report mode */
+    pro_out[id][11] = 0x30U;             /* arg: standard full @ 60 Hz  */
+    USBH_InterruptSendData(phost, pro_out[id], 12U, h->OutPipe);
+    pro_pkt[id] = (uint8_t)((pro_pkt[id] + 1U) & 0x0FU);
+    pro_next[id] = HAL_GetTick() + 250U;
+  }
+}
+
+
 /**
   * @}
   */
@@ -179,6 +271,7 @@ USBH_StatusTypeDef USBH_HID_GamepadInit(USBH_HandleTypeDef *phost)
    * confusing because the user expects "just connected" to mean
    * "nothing recorded yet". */
   memset(&gamepad_info[phost->id & 1U], 0, sizeof(HID_gamepad_Info_TypeDef));
+  USBH_HID_ProReset((uint8_t)phost->id);
 
   /* Prefer the endpoint's wMaxPacketSize (already stashed into
    * HID_Handle->length by usbh_hid.c:IFACE_READHID) over the descriptor
@@ -201,7 +294,16 @@ USBH_StatusTypeDef USBH_HID_GamepadInit(USBH_HandleTypeDef *phost)
 
 
   HID_Handle->pData = (uint8_t*) malloc (reportSize *sizeof(uint8_t)); //(uint8_t*)(void *)
-  USBH_HID_FifoInit(&HID_Handle->fifo, phost->device.Data, HID_QUEUE_SIZE * reportSize);
+  /* Clamp the queue to the shared device.Data buffer.  A large-report
+   * pad (e.g. Switch Pro: 64-byte reports) would otherwise size the FIFO
+   * to HID_QUEUE_SIZE*64 = 640 > USBH_MAX_DATA_BUFFER (512); the ring then
+   * writes past device.Data, corrupting memory and crashing the whole USB
+   * host the moment reports start arriving. */
+  uint16_t fifo_sz = (uint16_t)(HID_QUEUE_SIZE * reportSize);
+  if (fifo_sz > USBH_MAX_DATA_BUFFER) {
+    fifo_sz = (uint16_t)((USBH_MAX_DATA_BUFFER / reportSize) * reportSize);
+  }
+  USBH_HID_FifoInit(&HID_Handle->fifo, phost->device.Data, fifo_sz);
 
   return USBH_OK;
 }
@@ -398,6 +500,62 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	      /* Sel / Start / L / R go into extraBtn bits 0..3                */
 	      info->gamepad_data = d;
 	      info->gamepad_extraBtn = (btns >> 4) & 0x0FU;
+	    }
+	    else if (vid == SWITCH_PRO_VID && pid == SWITCH_PRO_PID) {
+	      /* Drive the wired bring-up handshake until 0x30 reports flow. */
+	      USBH_HID_ProHandshake(phost, HID_Handle);
+
+	      /* 0x30 standard full report:
+	       *   [3] Y X B A SR SL R  ZR
+	       *   [4] - + Rs Ls Home Cap
+	       *   [5] Dn Up Rt Lf SR SL L ZL
+	       *   [6..8] left stick (12-bit X then 12-bit Y)              */
+	      if (info->raw_report_len >= 12 && info->raw_report[0] == 0x30U) {
+	        pro_done[phost->id & 1U] = 1U;   /* streaming: stop resends */
+
+	        uint8_t b1 = info->raw_report[3];
+	        uint8_t b2 = info->raw_report[4];
+	        uint8_t b3 = info->raw_report[5];
+	        uint8_t d = 0;
+
+	        if (b3 & 0x04U) d |= JOY_RIGHT;  /* D-pad (byte 5) */
+	        if (b3 & 0x08U) d |= JOY_LEFT;
+	        if (b3 & 0x01U) d |= JOY_DOWN;
+	        if (b3 & 0x02U) d |= JOY_UP;
+
+	        /* Left analog stick -> directions too (12-bit, ~2048 mid).
+	         * If up/down read swapped on your unit, flip these two. */
+	        uint16_t lx = (uint16_t)info->raw_report[6]
+	                    | ((uint16_t)(info->raw_report[7] & 0x0FU) << 8);
+	        uint16_t ly = (uint16_t)(info->raw_report[7] >> 4)
+	                    | ((uint16_t)info->raw_report[8] << 4);
+	        if (lx < 1200U) d |= JOY_LEFT;
+	        if (lx > 2900U) d |= JOY_RIGHT;
+	        if (ly > 2900U) d |= JOY_UP;
+	        if (ly < 1200U) d |= JOY_DOWN;
+
+	        /* Face buttons -> USB buttons 0..3 (b0=B b1=A b2=Y b3=X). */
+	        uint8_t btns = 0;
+	        if (b1 & 0x04U) btns |= 0x01U;   /* B */
+	        if (b1 & 0x08U) btns |= 0x02U;   /* A */
+	        if (b1 & 0x01U) btns |= 0x04U;   /* Y */
+	        if (b1 & 0x02U) btns |= 0x08U;   /* X */
+	        d |= (uint8_t)((btns & 0x0FU) << JOY_BTN_SHIFT);
+
+	        /* USB buttons 4..11: L R ZL ZR Minus Plus Home Capture. */
+	        uint8_t ex = 0;
+	        if (b3 & 0x40U) ex |= 0x01U;     /* L  */
+	        if (b1 & 0x40U) ex |= 0x02U;     /* R  */
+	        if (b3 & 0x80U) ex |= 0x04U;     /* ZL */
+	        if (b1 & 0x80U) ex |= 0x08U;     /* ZR */
+	        if (b2 & 0x01U) ex |= 0x10U;     /* Minus   */
+	        if (b2 & 0x02U) ex |= 0x20U;     /* Plus    */
+	        if (b2 & 0x10U) ex |= 0x40U;     /* Home    */
+	        if (b2 & 0x20U) ex |= 0x80U;     /* Capture */
+
+	        info->gamepad_data = d;
+	        info->gamepad_extraBtn = ex;
+	      }
 	    }
 	  }
 

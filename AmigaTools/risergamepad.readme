@@ -117,6 +117,7 @@
        results on this hardware:
          - 8BitDo SFC30, connected by USB CABLE: works.
          - "MR1809WL" wireless pad (dongle), in D-input mode: works.
+         - Nintendo Switch Pro Controller (USB cable): works.
          - 8BitDo PC Engine (PCE) pad: did NOT work.
          - 8BitDo NeoGeo pad: did NOT work.
 
