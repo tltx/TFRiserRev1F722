@@ -203,6 +203,54 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  	  case IFACE_READHID:
 	  	  {
 	  		USBH_StatusTypeDef ghd_status;
+
+		/* Prefer the HID descriptor inlined in the (already-fetched) config
+		 * descriptor over a standalone GET_DESCRIPTOR(HID).  Some HID pads
+		 * (e.g. HORI / 8BitDo Switch-mode) NAK that standalone request for
+		 * seconds, racing their own reset timeout so class-init never
+		 * finishes.  The inline copy is authoritative and free.  Single
+		 * HID-class interface only, so the lone HID descriptor is
+		 * unambiguous; everything else keeps the original path. */
+		Itf_Desc = &phost->device.CfgDesc.Itf_Desc[phost->pActiveClass->iface_initnum];
+		if (Itf_Desc->bInterfaceClass == 0x03U
+		    && phost->device.CfgDesc.bNumInterfaces == 1U)
+		{
+			uint16_t witem = 0U, o = 0U;
+			uint16_t total = phost->device.CfgDesc.wTotalLength;
+			if (total > USBH_MAX_SIZE_CONFIGURATION) total = USBH_MAX_SIZE_CONFIGURATION;
+			while ((uint16_t)(o + 9U) <= total)
+			{
+				uint8_t blen = phost->device.CfgDesc_Raw[o];
+				if (blen == 0U) break;
+				if (phost->device.CfgDesc_Raw[o + 1U] == 0x21U) {
+					witem = (uint16_t)phost->device.CfgDesc_Raw[o + 7U]
+					      | ((uint16_t)phost->device.CfgDesc_Raw[o + 8U] << 8);
+					break;
+				}
+				o = (uint16_t)(o + blen);
+			}
+			if (witem != 0U)
+			{
+				uint8_t e;
+				HID_Handle = phost->pActiveClass->pData[phost->pActiveClass->iface_initnum];
+				HID_Handle->state     = HID_INIT;
+				HID_Handle->ctl_state = HID_REQ_INIT;
+				HID_Handle->ep_addr   = Itf_Desc->Ep_Desc[0].bEndpointAddress;
+				HID_Handle->length    = Itf_Desc->Ep_Desc[0].wMaxPacketSize;
+				HID_Handle->poll      = Itf_Desc->Ep_Desc[0].bInterval;
+				for (e = 0U; e < Itf_Desc->bNumEndpoints && e < USBH_MAX_NUM_ENDPOINTS; e++) {
+					if ((Itf_Desc->Ep_Desc[e].bEndpointAddress & 0x80U) != 0U) {
+						HID_Handle->ep_addr = Itf_Desc->Ep_Desc[e].bEndpointAddress;
+						HID_Handle->length  = Itf_Desc->Ep_Desc[e].wMaxPacketSize;
+						HID_Handle->poll    = Itf_Desc->Ep_Desc[e].bInterval;
+						break;
+					}
+				}
+				HID_Handle->HID_Desc.wItemLength = witem;
+				phost->pActiveClass->iface_init = IFACE_READHIDRPTDESC;
+				break;
+			}
+		}
 	  		iface_num = phost->device.CfgDesc.Itf_Desc[phost->pActiveClass->iface_initnum].bInterfaceNumber;
 	  		USBH_SelectInterface(phost, iface_num);
 

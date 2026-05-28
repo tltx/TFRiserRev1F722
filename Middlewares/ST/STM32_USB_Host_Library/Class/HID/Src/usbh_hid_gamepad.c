@@ -557,6 +557,26 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	        info->gamepad_extraBtn = ex;
 	      }
 	    }
+	    else if (vid == 0x0F0DU && pid == 0x0138U
+	             && info->raw_report_len >= 4) {
+	      /* HORI / 8BitDo PC Engine pad in Switch mode.  Buttons and the
+	       * analog stick are already decoded by the generic path above;
+	       * the D-pad is a hat switch in byte 2 that the generic decoder
+	       * ignores (0=U 2=R 4=D 6=L, odd values = diagonals, 0x0F =
+	       * released).  OR the hat directions in, leaving buttons/stick
+	       * untouched. */
+	      switch (info->raw_report[2]) {
+	      case 0x00U: info->gamepad_data |= JOY_UP;               break;
+	      case 0x01U: info->gamepad_data |= JOY_UP | JOY_RIGHT;   break;
+	      case 0x02U: info->gamepad_data |= JOY_RIGHT;            break;
+	      case 0x03U: info->gamepad_data |= JOY_DOWN | JOY_RIGHT; break;
+	      case 0x04U: info->gamepad_data |= JOY_DOWN;             break;
+	      case 0x05U: info->gamepad_data |= JOY_DOWN | JOY_LEFT;  break;
+	      case 0x06U: info->gamepad_data |= JOY_LEFT;             break;
+	      case 0x07U: info->gamepad_data |= JOY_UP | JOY_LEFT;    break;
+	      default: break;  /* 0x08 / 0x0F = centred */
+	      }
+	    }
 	  }
 
 	  return USBH_OK;
