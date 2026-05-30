@@ -15,6 +15,11 @@ TIM_HandleTypeDef htim14;
 uint8_t processFlag = 1;
 uint8_t i = 0;
 
+/* DIAG: how many times amikb_reset() (Amiga keyboard hard-reset) fired,
+ * and the keyboard data that triggered it the last time. */
+volatile uint32_t g_kbreset_count = 0;
+volatile uint8_t  g_kbreset_data[4] = {0, 0, 0, 0}; /* lctrl, lalt, keys0, keys1 */
+
 
 #define KEY_BUFF_SIZE							50
 
@@ -963,6 +968,11 @@ led_status_t amikb_process(keyboard_code_t *data)
 	//check for reset
 	if(data->lctrl == 1 && data->lalt ==1 &&data->keys[0]==KEY_DELETE  )
 	{
+		g_kbreset_count++;
+		g_kbreset_data[0] = (uint8_t)data->lctrl;
+		g_kbreset_data[1] = (uint8_t)data->lalt;
+		g_kbreset_data[2] = data->keys[0];
+		g_kbreset_data[3] = data->keys[1];
 		amikb_reset();
 	}
 

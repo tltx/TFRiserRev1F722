@@ -84,6 +84,17 @@ static  gamepad_buttons_t gamepad2_buttons;
 
 RTC_HandleTypeDef hrtc;
 
+/* HardFault diagnostics: PC/CFSR/LR from the last captured fault,
+ * restored from backup regs at boot, exposed via the $17=0x80 window. */
+static volatile uint32_t g_fault_pc = 0, g_fault_cfsr = 0, g_fault_lr = 0;
+static volatile uint32_t g_fault_sp = 0, g_fault_count = 0;
+static volatile uint32_t g_boot_count = 0;
+static volatile uint8_t  g_reset_flags = 0;
+static volatile uint8_t  fault_test_pending = 0;
+static volatile uint8_t  fault_report_mode = 0;
+extern volatile uint32_t g_kbreset_count;
+extern volatile uint8_t  g_kbreset_data[4];
+
 TIM_HandleTypeDef htim14;
 
 /* USER CODE BEGIN PV */
@@ -196,6 +207,20 @@ int main(void)
 	} else {
 		sensitivityMouse = 2;
 	}
+	if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR18) == 0xFA017FA0U) {
+		g_fault_pc   = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR19);
+		g_fault_cfsr = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR20);
+		g_fault_lr   = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR21);
+		g_fault_sp    = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR24);
+		g_fault_count = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR23);
+	}
+	/* Why did the STM32 last reset (BOR/power, pin, software), and is
+	 * it resetting at all?  RCC->CSR holds the cause; a boot counter
+	 * (cleared by 'fault clear') tells us if the MCU reboots. */
+	g_reset_flags = (uint8_t)((RCC->CSR >> 24) & 0xFFU);
+	__HAL_RCC_CLEAR_RESET_FLAGS();
+	g_boot_count = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR25) + 1U;
+	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR25, g_boot_count);
 	gamepad_map_load();
 
   /* USER CODE END 2 */
@@ -206,6 +231,21 @@ int main(void)
 
     /* USER CODE END WHILE */
     MX_USB_HOST_Process();
+
+		{
+			/* Clear the fault-reset counter after stable uptime so isolated
+			 * faults always auto-recover; only a tight reset loop hangs. */
+			static uint8_t rc_cleared = 0;
+			if (!rc_cleared && HAL_GetTick() > 5000U) {
+				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR22, 0);
+				rc_cleared = 1;
+			}
+		}
+
+		if (fault_test_pending) {
+			fault_test_pending = 0;
+			__asm volatile ("udf #0");  /* deliberate fault: self-test the capture path */
+		}
 
     /* USER CODE BEGIN 3 */
 
@@ -981,7 +1021,30 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 						WriteData(0);
 					}
 				} else if (address >= 0x18 && address <= 0x1F) {
-					if (usb && (usb->gamepad1 || usb->gamepad2)) {
+					if (fault_report_mode == 1) {
+						uint32_t _fp = g_fault_pc, _fc = g_fault_cfsr;
+						uint8_t _fb[8];
+						_fb[0]=(uint8_t)_fp;        _fb[1]=(uint8_t)(_fp>>8);
+						_fb[2]=(uint8_t)(_fp>>16);  _fb[3]=(uint8_t)(_fp>>24);
+						_fb[4]=(uint8_t)_fc;        _fb[5]=(uint8_t)(_fc>>8);
+						_fb[6]=(uint8_t)(_fc>>16);  _fb[7]=(uint8_t)(_fc>>24);
+						WriteData(_fb[address - 0x18]);
+					} else if (fault_report_mode == 2) {
+						uint8_t _kb[8];
+						_kb[0]=(uint8_t)g_kbreset_count; _kb[1]=g_kbreset_data[0];
+						_kb[2]=g_kbreset_data[1];       _kb[3]=g_kbreset_data[2];
+						_kb[4]=g_kbreset_data[3];       _kb[5]=(uint8_t)g_fault_count;
+						_kb[6]=(uint8_t)g_boot_count;   _kb[7]=g_reset_flags;
+						WriteData(_kb[address - 0x18]);
+					} else if (fault_report_mode == 3) {
+						uint32_t _l = g_fault_lr, _s = g_fault_sp;
+						uint8_t _ls[8];
+						_ls[0]=(uint8_t)_l;        _ls[1]=(uint8_t)(_l>>8);
+						_ls[2]=(uint8_t)(_l>>16);  _ls[3]=(uint8_t)(_l>>24);
+						_ls[4]=(uint8_t)_s;        _ls[5]=(uint8_t)(_s>>8);
+						_ls[6]=(uint8_t)(_s>>16);  _ls[7]=(uint8_t)(_s>>24);
+						WriteData(_ls[address - 0x18]);
+					} else if (usb && (usb->gamepad1 || usb->gamepad2)) {
 						HID_gamepad_Info_TypeDef *gp =
 							usb->gamepad1 ? usb->gamepad1 : usb->gamepad2;
 						uint8_t idx = raw_report_offset + (address - 0x18);
@@ -1041,9 +1104,28 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 		 * of 8 in [0,24] are accepted; anything else clamps to 0. */
 		if (address == 0x17) {
 			uint8_t off = ReadData();
-			if (off == 0 || off == 8 || off == 16 || off == 24) {
+			if (off == 0x80) {
+				fault_report_mode = 1;
+			} else if (off == 0x81) {
+				fault_report_mode = 2;
+			} else if (off == 0x82) {
+				fault_report_mode = 3;
+			} else if (off == 0x83) {
+				/* clear all fault diagnostics for a clean baseline */
+				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR18, 0);
+				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR23, 0);
+				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR25, 0);
+				g_fault_pc = 0; g_fault_cfsr = 0; g_fault_lr = 0;
+				g_fault_sp = 0; g_fault_count = 0; g_kbreset_count = 0;
+				g_boot_count = 0;
+				fault_report_mode = 0;
+			} else if (off == 0x84) {
+				fault_test_pending = 1;
+			} else if (off == 0 || off == 8 || off == 16 || off == 24) {
+				fault_report_mode = 0;
 				raw_report_offset = off;
 			} else {
+				fault_report_mode = 0;
 				raw_report_offset = 0;
 			}
 		}

@@ -479,6 +479,90 @@ static void read_all_raw(unsigned char *out)
     }
 }
 
+/* Report the last firmware HardFault, if any.  The riser captures the
+ * faulting PC/CFSR in backup registers and auto-recovers (warm reset);
+ * writing 0x80 to the raw-window selector ($17) exposes 8 bytes at
+ * $18..$1F:  PC (little-endian, 4) then CFSR (4). */
+static int cmd_fault(int action)
+{
+    unsigned char b[8];
+    int i;
+    unsigned long pc, cfsr;
+
+    if (action == 1) {                     /* clear */
+        riser[RAW_WIN_SELECT] = 0x83;
+        riser[RAW_WIN_SELECT] = 0;
+        printf("Fault diagnostics cleared.  Reproduce, then run "
+               "'risergamepad fault'.\n");
+        return 0;
+    }
+    if (action == 2) {                     /* self-test */
+        printf("Triggering a deliberate fault to test the capture path.\n");
+        printf("The riser will fault and auto-recover (USB will blip).\n");
+        printf("Then run 'risergamepad fault' -- you should see one\n");
+        printf("HardFault recorded with a non-zero PC.\n");
+        riser[RAW_WIN_SELECT] = 0x84;
+        return 0;
+    }
+
+    riser[RAW_WIN_SELECT] = 0x80;          /* select fault-report window */
+    for (i = 0; i < 8; i++) b[i] = riser[RAW_REPORT_BASE + i];
+    riser[RAW_WIN_SELECT] = 0;             /* restore normal raw window */
+
+    pc   = (unsigned long)b[0] | ((unsigned long)b[1] << 8)
+         | ((unsigned long)b[2] << 16) | ((unsigned long)b[3] << 24);
+    cfsr = (unsigned long)b[4] | ((unsigned long)b[5] << 8)
+         | ((unsigned long)b[6] << 16) | ((unsigned long)b[7] << 24);
+
+    /* LR + SP at the fault (window 0x82). */
+    {
+        unsigned char b2[8];
+        unsigned long lr, sp;
+        riser[RAW_WIN_SELECT] = 0x82;
+        for (i = 0; i < 8; i++) b2[i] = riser[RAW_REPORT_BASE + i];
+        riser[RAW_WIN_SELECT] = 0;
+        lr = (unsigned long)b2[0] | ((unsigned long)b2[1] << 8)
+           | ((unsigned long)b2[2] << 16) | ((unsigned long)b2[3] << 24);
+        sp = (unsigned long)b2[4] | ((unsigned long)b2[5] << 8)
+           | ((unsigned long)b2[6] << 16) | ((unsigned long)b2[7] << 24);
+
+        if (pc == 0) {
+            printf("No firmware HardFault recorded since the last cold boot.\n");
+        } else {
+            printf("Last firmware HardFault (riser auto-recovered):\n");
+            printf("  PC   = 0x%08lx   faulting address\n", pc);
+            printf("  LR   = 0x%08lx   link register (calling context)\n", lr);
+            printf("  SP   = 0x%08lx   stack pointer at fault\n", sp);
+            printf("  CFSR = 0x%08lx   fault status\n", cfsr);
+        }
+    }
+
+    /* amikb_reset diagnostics + monotonic fault count (window 0x81). */
+    riser[RAW_WIN_SELECT] = 0x81;
+    for (i = 0; i < 8; i++) b[i] = riser[RAW_REPORT_BASE + i];
+    riser[RAW_WIN_SELECT] = 0;
+    printf("\nSTM32 reboots since clear:  %u\n", (unsigned)b[6]);
+    if (b[6] != 0) {
+        unsigned rf = b[7];
+        printf("  last reset cause:");
+        if (rf & 0x02) printf(" BROWN-OUT/power");
+        if (rf & 0x04) printf(" NRST-pin");
+        if (rf & 0x08) printf(" power-on");
+        if (rf & 0x10) printf(" software");
+        if (rf & 0x20) printf(" indep-watchdog");
+        if (rf & 0x40) printf(" window-watchdog");
+        if (rf & 0x80) printf(" low-power");
+        printf("  (flags=0x%02X)\n", rf);
+    }
+    printf("HardFaults since clear:     %u\n", (unsigned)b[5]);
+    printf("amikb_reset fired:          %u time(s)\n", (unsigned)b[0]);
+    if (b[0] != 0) {
+        printf("  last trigger: lctrl=%u lalt=%u keys[0]=0x%02X keys[1]=0x%02X\n",
+               (unsigned)b[1], (unsigned)b[2], (unsigned)b[3], (unsigned)b[4]);
+    }
+    return 0;
+}
+
 /* Show raw HID report bytes from the currently-connected gamepad.  Bypasses
  * the firmware's HID descriptor parser, so it works even when the parser
  * fails to decode this gamepad's button bits. */
@@ -946,6 +1030,13 @@ int main(int argc, char *argv[])
             if (CheckSignal(SIGBREAKF_CTRL_C)) break;
         }
         return 0;
+    }
+
+    if (argc >= 2 && strcmp(argv[1], "fault") == 0) {
+        int act = 0;
+        if (argc >= 3 && strcmp(argv[2], "clear") == 0) act = 1;
+        else if (argc >= 3 && strcmp(argv[2], "test") == 0)  act = 2;
+        return cmd_fault(act);
     }
 
     if (argc == 2 && strcmp(argv[1], "raw") == 0) {
