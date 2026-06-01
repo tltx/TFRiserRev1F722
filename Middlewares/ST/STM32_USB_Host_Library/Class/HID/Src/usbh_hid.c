@@ -526,6 +526,33 @@ static USBH_StatusTypeDef USBH_HID_InterfaceInit(USBH_HandleTypeDef *phost)
 	  		  		      status = USBH_OK;
 	  		  		   }
 	  		  		}
+	  		  		/* Gaming mice (SteelSeries Rival 3, Mionix Avior 7000,
+	  		  		 * etc.) expose interface 0 as a boot mouse and one or
+	  		  		 * more additional non-boot-class HID interfaces for
+	  		  		 * high-res deltas, vendor RGB / profile control and
+	  		  		 * the like.  We can't drive those interfaces usefully
+	  		  		 * (their report descriptors classify as nothing we know
+	  		  		 * and they need vendor software anyway).  Trying to
+	  		  		 * poll them wedges the firmware: their reports trample
+	  		  		 * the global mouse_info, and the extra 1 ms interrupt
+	  		  		 * pipe traffic saturates the OTG IRQ until the host
+	  		  		 * locks up and no port can enumerate anything new.
+	  		  		 * When iface 0 is a boot mouse and the device declares
+	  		  		 * additional interfaces, treat it as boot-mouse-only
+	  		  		 * and stop here.  Keyboard+mouse combos (e.g. Logitech
+	  		  		 * K400, where iface 0 is a boot keyboard) are
+	  		  		 * unaffected because the iface 0 protocol check below
+	  		  		 * fails for them. */
+	  		  		if (status != USBH_OK) {
+	  		  		   USBH_InterfaceDescTypeDef *itf0 =
+	  		  		      &phost->device.CfgDesc.Itf_Desc[0];
+	  		  		   if (itf0->bInterfaceClass    == 0x03U
+	  		  		       && itf0->bInterfaceSubClass == 0x01U
+	  		  		       && itf0->bInterfaceProtocol == HID_MOUSE_BOOT_CODE
+	  		  		       && phost->device.CfgDesc.bNumInterfaces > 1U) {
+	  		  		      status = USBH_OK;
+	  		  		   }
+	  		  		}
 	  		  		if (status == USBH_OK) break;
 
 	  		  	    //Check if we have any other interfaces to phost->device.CfgDesc.bNumInterfaces
