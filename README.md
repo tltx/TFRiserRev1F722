@@ -1,5 +1,11 @@
 # TFRiserRev1F722
 
+> **Fork notice**: This is Tore Lundqvist's fork of
+> [arkadiuszmakarenko/TFRiserRev1F722](https://github.com/arkadiuszmakarenko/TFRiserRev1F722).
+> Changes here are being submitted upstream as pull requests; this fork
+> exists so users can have the changes today. Bug reports about
+> behaviour added in this fork belong on this repo, not on upstream.
+
 STM32F722 firmware for the TF CD32 Riser — a board that lets you use
 modern USB gamepads, keyboards and mice on an Amiga / CD32.
 
