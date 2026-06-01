@@ -908,6 +908,19 @@ void amikb_process_irq()
 		return;
 	}
 
+	/* Mask all maskable interrupts for the duration of the bit-bang.
+	 * The Amiga keyboard protocol treats KBD_CLOCK held low >=500ms as a
+	 * hard-reset assertion.  We run from TIM14 (priority 15 = lowest),
+	 * so any higher-priority IRQ -- in particular an OTG re-enumeration
+	 * storm from a flaky USB device -- can preempt us mid-pulse and
+	 * stretch the low time arbitrarily.  The whole sequence below is
+	 * ~150us; deferring USB IRQs that long is harmless (the host FIFOs
+	 * absorb it), and it makes KBD_CLOCK timing immune to IRQ pressure.
+	 * Background: upstream cd32_riser RTL hardware-paced KBD via the SPI
+	 * peripheral gated by NSS; our CPLD removed that mux, leaving the
+	 * firmware as the sole guarantor of KBD_CLOCK low-time.  This is the
+	 * software equivalent. */
+	__disable_irq();
 
 	HAL_GPIO_WritePin(KBD_DATA_GPIO_Port, KBD_DATA_Pin, GPIO_PIN_SET); // Normally KBD_DATA pin is HIGH
 
@@ -940,6 +953,8 @@ void amikb_process_irq()
 	}
 	DWT_Delay(10);
 	HAL_GPIO_WritePin(KBD_DATA_GPIO_Port, KBD_DATA_Pin, GPIO_PIN_SET); // Set KBD_DATA pin
+
+	__enable_irq();
 }
 
 
