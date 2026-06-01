@@ -576,6 +576,73 @@ static USBH_StatusTypeDef USBH_HID_GamepadDecode(USBH_HandleTypeDef *phost)
 	      case 0x07U: info->gamepad_data |= JOY_UP | JOY_LEFT;    break;
 	      default: break;  /* 0x08 / 0x0F = centred */
 	      }
+
+	      /* The 'select', 'run' and 'menu' system buttons are encoded
+	       * as a value -- not bit flags -- in raw_report[1]:
+	       *   0x00 = none, 0x01 = select, 0x02 = run, 0x03 = menu.
+	       * The generic HID decoder above treats byte 1 bits 0 and 1 as
+	       * two independent buttons, so 'menu' (0x03) gets reported as
+	       * select+run pressed simultaneously.  Find whichever output
+	       * bits the parser assigned to those two source bits (so we
+	       * don't have to assume button ordering), clear them, then
+	       * re-set the one that actually matches the encoded value.
+	       * 'menu' is synthesized on a fresh USB-button slot so it can
+	       * be mapped independently in the gamepad-map tool. */
+	      {
+	        hid_report_t *rc = &HID_Handle->HID_Desc.RptDesc;
+	        /* `button[].byte_offset` is relative to p, which the parser
+	         * advances past the report-ID byte if one is present:
+	         *   p = gamepad_report_data + (report_id ? 1 : 0)
+	         * Our raw_report snapshot is gamepad_report_data unmodified,
+	         * so the byte_offset that targets raw_report[1] is 0 when a
+	         * report ID is present and 1 when it is not. */
+	        uint8_t target_off = rc->report_id ? 0U : 1U;
+	        uint16_t clear_data  = 0;
+	        uint8_t  clear_extra = 0;
+	        uint16_t sel_data    = 0;
+	        uint8_t  sel_extra   = 0;
+	        uint16_t run_data    = 0;
+	        uint8_t  run_extra   = 0;
+	        for (uint8_t k = 0; k < 12U; k++) {
+	          if (rc->joystick_mouse.button[k].byte_offset != target_off)
+	            continue;
+	          uint8_t bm = rc->joystick_mouse.button[k].bitmask;
+	          if (bm != 0x01U && bm != 0x02U)
+	            continue;
+	          /* output bit position depends on whether this is one of the
+	           * first four buttons (gamepad_data >> JOY_BTN_SHIFT) or one
+	           * of the eight extras (gamepad_extraBtn bit (k-4)). */
+	          if (k < 4U) {
+	            uint16_t m = (uint16_t)1U << (JOY_BTN_SHIFT + k);
+	            clear_data |= m;
+	            if (bm == 0x01U) sel_data = m;
+	            else             run_data = m;
+	          } else {
+	            uint8_t m = (uint8_t)(1U << (k - 4U));
+	            clear_extra |= m;
+	            if (bm == 0x01U) sel_extra = m;
+	            else             run_extra = m;
+	          }
+	        }
+	        info->gamepad_data    &= (uint16_t)~clear_data;
+	        info->gamepad_extraBtn &= (uint8_t) ~clear_extra;
+	        switch (info->raw_report[1] & 0x03U) {
+	        case 0x01U: /* select alone */
+	          info->gamepad_data    |= sel_data;
+	          info->gamepad_extraBtn |= sel_extra;
+	          break;
+	        case 0x02U: /* run alone */
+	          info->gamepad_data    |= run_data;
+	          info->gamepad_extraBtn |= run_extra;
+	          break;
+	        case 0x03U: /* menu alone -- distinct from select+run */
+	          /* Place 'menu' on USB button 11 (extraBtn bit 7), the
+	           * highest free slot on this 8-game-button pad. */
+	          info->gamepad_extraBtn |= 0x80U;
+	          break;
+	        default: break;  /* 0x00 = none */
+	        }
+	      }
 	    }
 	  }
 
