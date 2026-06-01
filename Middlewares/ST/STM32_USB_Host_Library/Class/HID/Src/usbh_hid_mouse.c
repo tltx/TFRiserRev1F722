@@ -138,14 +138,13 @@ USBH_StatusTypeDef USBH_HID_MouseInit(USBH_HandleTypeDef *phost)
   */
 HID_MOUSE_Info_TypeDef *USBH_HID_GetMouseInfo(USBH_HandleTypeDef *phost)
 {
- if(USBH_HID_MouseDecode(phost)== USBH_OK)
- {
+  /* Best-effort refresh.  Always return the static mouse_info so callers
+   * see a stable pointer while the mouse is connected; otherwise
+   * usbDev.mouse flips to NULL between USB reports and the main loop's
+   * `if (usb->mouse != NULL)` mouse-processing gate is open less than
+   * 1% of the time.  Same fix shape as USBH_HID_GetGamepadInfo. */
+  (void)USBH_HID_MouseDecode(phost);
   return &mouse_info;
- }
- else
- {
-  return NULL;
- }
 }
 
 
@@ -214,15 +213,50 @@ static USBH_StatusTypeDef USBH_HID_MouseDecode(USBH_HandleTypeDef *phost)
   {
 
 	  uint8_t btn = 0;
-	  uint8_t btn_extra = 0;
 	  int16_t a[2];
 	  uint8_t i;
-
-
 
 	  // skip report id if present
 	  uint8_t *p = mouse_report_data+(HID_Handle->HID_Desc.RptDesc.report_id?1:0);
 
+	  /* Boot-mouse fallback: only when the parser couldn't extract
+	   * X/Y axis info from the report descriptor (axis size == 0).
+	   * Triggers e.g. for the Logitech Unifying Receiver mouse
+	   * interface, whose 148-byte descriptor sets RptDesc.type to
+	   * REPORT_TYPE_MOUSE but leaves axis offsets/sizes at 0 because
+	   * the parser bails on a sub-collection it doesn't understand.
+	   * Without this fallback the parser-based decode below reads
+	   * zero-size axes via collect_bits() and mouse_info stays at 0.
+	   *
+	   * Gated on axis[0].size == 0 (not on RptDesc.type) so that
+	   * normal mice -- whose parser successfully fills axis offsets
+	   * and whose actual wire format may be larger than 3 bytes
+	   * (report ID + buttons + X + Y + wheel) -- keep using the
+	   * accurate parser-based path.
+	   *
+	   * Boot mouse format:
+	   *   byte 0 = buttons (bit 0 = L, bit 1 = R, bit 2 = M)
+	   *   byte 1 = X delta (int8)
+	   *   byte 2 = Y delta (int8) */
+	  {
+	    USBH_InterfaceDescTypeDef *itf =
+	      &phost->device.CfgDesc.Itf_Desc[phost->device.current_interface];
+	    int is_boot_mouse = (itf->bInterfaceClass == 0x03U
+	                         && itf->bInterfaceSubClass == 0x01U
+	                         && itf->bInterfaceProtocol == 0x02U);
+	    int parser_failed_axes =
+	        (HID_Handle->HID_Desc.RptDesc.joystick_mouse.axis[0].size == 0U
+	         || HID_Handle->HID_Desc.RptDesc.joystick_mouse.axis[1].size == 0U);
+	    if (is_boot_mouse && parser_failed_axes
+	        && HID_Handle->length >= 3U) {
+	      mouse_info.buttons[0] = p[0] & 0x01U;
+	      mouse_info.buttons[1] = (p[0] >> 1) & 0x01U;
+	      mouse_info.buttons[2] = (p[0] >> 2) & 0x01U;
+	      mouse_info.x = (int8_t)p[1];
+	      mouse_info.y = (int8_t)p[2];
+	      return USBH_OK;
+	    }
+	  }
 
 	  //process axis
 	  // two axes ...
@@ -240,14 +274,8 @@ static USBH_StatusTypeDef USBH_HID_MouseDecode(USBH_HandleTypeDef *phost)
 	  	if(p[HID_Handle->HID_Desc.RptDesc.joystick_mouse.button[i].byte_offset] &
 	  			HID_Handle->HID_Desc.RptDesc.joystick_mouse.button[i].bitmask) btn |= (1<<i);
 
-	  // ... and the eight extra buttons
-	  for(i=4;i<12;i++)
-	  	if(p[HID_Handle->HID_Desc.RptDesc.joystick_mouse.button[i].byte_offset] &
-	  			HID_Handle->HID_Desc.RptDesc.joystick_mouse.button[i].bitmask) btn_extra |= (1<<(i-4));
-
 	  //process mouse
 	  if(HID_Handle->HID_Desc.RptDesc.type == REPORT_TYPE_MOUSE) {
-	  		// iprintf("mouse %d %d %x\n", (int16_t)a[0], (int16_t)a[1], btn);
 	  		// limit mouse movement to +/- 128
 	  		for(i=0;i<2;i++) {
 	  		if((int16_t)a[i] >  127) a[i] =  127;

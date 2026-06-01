@@ -26,6 +26,7 @@
 #include "dwt_delay.h"
 #include "amiga.h"
 #include "rtc_msm6242.h"
+#include "gamepad_map.h"
 
 /* USER CODE END Includes */
 
@@ -66,6 +67,7 @@ static  int8_t joy1datHDelta = 0;
 static  int8_t joy1datLDelta = 0;
 
 static  uint8_t sensitivityMouse;
+static  uint8_t raw_report_offset;   /* base index into gamepad raw_report */
 
 static  gamepad_buttons_t gamepad1_buttons;
 static  gamepad_buttons_t gamepad2_buttons;
@@ -81,6 +83,17 @@ static  gamepad_buttons_t gamepad2_buttons;
 /* Private variables ---------------------------------------------------------*/
 
 RTC_HandleTypeDef hrtc;
+
+/* HardFault diagnostics: PC/CFSR/LR from the last captured fault,
+ * restored from backup regs at boot, exposed via the $17=0x80 window. */
+static volatile uint32_t g_fault_pc = 0, g_fault_cfsr = 0, g_fault_lr = 0;
+static volatile uint32_t g_fault_sp = 0, g_fault_count = 0;
+static volatile uint32_t g_boot_count = 0;
+static volatile uint8_t  g_reset_flags = 0;
+static volatile uint8_t  fault_test_pending = 0;
+static volatile uint8_t  fault_report_mode = 0;
+extern volatile uint32_t g_kbreset_count;
+extern volatile uint8_t  g_kbreset_data[4];
 
 TIM_HandleTypeDef htim14;
 
@@ -194,6 +207,21 @@ int main(void)
 	} else {
 		sensitivityMouse = 2;
 	}
+	if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR18) == 0xFA017FA0U) {
+		g_fault_pc   = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR19);
+		g_fault_cfsr = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR20);
+		g_fault_lr   = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR21);
+		g_fault_sp    = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR24);
+		g_fault_count = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR23);
+	}
+	/* Why did the STM32 last reset (BOR/power, pin, software), and is
+	 * it resetting at all?  RCC->CSR holds the cause; a boot counter
+	 * (cleared by 'fault clear') tells us if the MCU reboots. */
+	g_reset_flags = (uint8_t)((RCC->CSR >> 24) & 0xFFU);
+	__HAL_RCC_CLEAR_RESET_FLAGS();
+	g_boot_count = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR25) + 1U;
+	HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR25, g_boot_count);
+	gamepad_map_load();
 
   /* USER CODE END 2 */
 
@@ -203,6 +231,21 @@ int main(void)
 
     /* USER CODE END WHILE */
     MX_USB_HOST_Process();
+
+		{
+			/* Clear the fault-reset counter after stable uptime so isolated
+			 * faults always auto-recover; only a tight reset loop hangs. */
+			static uint8_t rc_cleared = 0;
+			if (!rc_cleared && HAL_GetTick() > 5000U) {
+				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR22, 0);
+				rc_cleared = 1;
+			}
+		}
+
+		if (fault_test_pending) {
+			fault_test_pending = 0;
+			__asm volatile ("udf #0");  /* deliberate fault: self-test the capture path */
+		}
 
     /* USER CODE BEGIN 3 */
 
@@ -292,12 +335,21 @@ int main(void)
 		}
 
 		if (usb->mouse != NULL) {
-			//; //delay interrupt
+			/* Consume the latest HID delta exactly once.  The HID decoder
+			 * assigns (not accumulates) x,y on each report, so leaving them
+			 * non-zero here causes the main loop to re-apply the same delta
+			 * thousands of times between reports -- pointer races in one
+			 * direction, then snaps back when the next report's drift is
+			 * applied just as hard. */
+			int16_t mx = usb->mouse->x;
+			int16_t my = usb->mouse->y;
+			usb->mouse->x = 0;
+			usb->mouse->y = 0;
 
 			joy0datHDelta = 0;
-			joy0datH = joy0datH + ((usb->mouse->y) / sensitivityMouse);
+			joy0datH = joy0datH + (my / sensitivityMouse);
 			joy0datLDelta = 0;
-			joy0datL = joy0datL + ((usb->mouse->x) / sensitivityMouse);
+			joy0datL = joy0datL + (mx / sensitivityMouse);
 
 			if (usb->mouse->buttons[1] == 1) {
 				POTGORH &= ~(1UL << 2);
@@ -345,50 +397,30 @@ int main(void)
 		if (usb->gamepad1 != NULL) {
 
 			//__disable_irq();
-			joy1datH = 0;
-			joy1datL = 0;
-			joy1datHDelta = 0;
-			joy1datLDelta = 0;
+			uint16_t gp1w = gp_combine(usb->gamepad1->gamepad_data,
+					usb->gamepad1->gamepad_extraBtn);
 
-			//usb->gamepad1->gamepad_extraBtn;
-
-			if (usb->gamepad1->gamepad_data >> 1 & 0x1)
-			{
-				joy1datH = 0x3;
-				joy1datHDelta = 0x3;
-			}
-			if (usb->gamepad1->gamepad_data >> 3 & 0x1)
-			{
-				joy1datH = 0x1;
-				joy1datHDelta = 0x1;
-			}
-			if (usb->gamepad1->gamepad_data >> 1 & 0x1
-					&& usb->gamepad1->gamepad_data >> 3 & 0x1)
-			{
-				joy1datH = 0x2;
-				joy1datHDelta = 0x2;
-
-			}
-			if (usb->gamepad1->gamepad_data & 0x1)
-			{
-				joy1datL = 0x3;
-				joy1datLDelta = 0x3;
-
-			}
-
-			if (usb->gamepad1->gamepad_data >> 2 & 0x1)
-			{
-				joy1datL = 0x1;
-				joy1datLDelta = 0x1;
-			}
-			if (usb->gamepad1->gamepad_data & 0x1
-					&& usb->gamepad1->gamepad_data >> 2 & 0x1)
-			{
-				joy1datL = 0x2;
-				joy1datLDelta = 0x2;
-			}
+			/* Decode the D-pad into locals and publish each JOYDAT byte with
+			 * a single store.  The Amiga reads JOY1DAT from EXTI0_IRQHandler,
+			 * which can preempt this loop; clearing joy1datH/L to 0 and then
+			 * setting them in separate steps lets a bus read catch a transient
+			 * neutral value -- which a game's menu reads as release+re-press,
+			 * running the selection down the list.  Compute once, store once,
+			 * exactly as the CD32 button word below already does. */
+			uint8_t gd1 = usb->gamepad1->gamepad_data;
+			int8_t njH = 0, njL = 0;
+			if (gd1 >> 1 & 0x1)                       njH = 0x3; /* left */
+			if (gd1 >> 3 & 0x1)                       njH = 0x1; /* up */
+			if ((gd1 >> 1 & 0x1) && (gd1 >> 3 & 0x1)) njH = 0x2; /* left+up */
+			if (gd1 & 0x1)                            njL = 0x3; /* right */
+			if (gd1 >> 2 & 0x1)                       njL = 0x1; /* down */
+			if ((gd1 & 0x1) && (gd1 >> 2 & 0x1))      njL = 0x2; /* right+down */
+			joy1datHDelta = njH;
+			joy1datLDelta = njL;
+			joy1datH = njH;
+			joy1datL = njL;
 			if ((POTGORH >> 5) & 1U) { //check if register is output enable
-				if (usb->gamepad1->gamepad_data >> 5 & 0x1) {
+				if (gp_btn(gp1w, gamepad1_map.src[GMAP_FIRE2])) {
 					POTGORH &= ~(1UL << 4);
 				} else {
 					POTGORH |= 1UL << 4;
@@ -396,51 +428,36 @@ int main(void)
 			}
 
 			if ((POTGORH >> 7) & 1U) { //check if register is output enable
-				if (usb->gamepad1->gamepad_data >> 4 & 0x1) {
+				if (gp_btn(gp1w, gamepad1_map.src[GMAP_FIRE3])) {
 					POTGORH &= ~(1UL << 6);
 				} else {
 					POTGORH |= 1UL << 6;
 				}
 			}
 
-			if (usb->gamepad1->gamepad_data >> 6 & 0x1) {
+			if (gp_btn(gp1w, gamepad1_map.src[GMAP_FIRE1])) {
 				CIAAPRA &= ~(1UL << 7);
 
 			} else {
 				CIAAPRA |= 1UL << 7;
 			}
 
-			//BTN1 =  (*joymap>>6&0x1);
-			//BTN2 =  (*joymap>>5&0x1);
-			//BTN3 =  (*joymap>>4&0x1);
-			//BTN4 =  (*joymap>>7&0x1);
-
-			//gamepad_extraBtn
-			// Play/Start - 0x20 32
-			//right front - 0x02 2
-			//left front - 0x01 1
-			//address = (address << 1) | ((GPIOA->IDR >> 10) & 1U); //PA10 - A4
-
-			gamepad1_buttons.buttons_data = 1; // Gamepad id
-
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_extraBtn >> 5 & 0x1);
-
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_extraBtn & 0x1);
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_extraBtn >> 1 & 0x1);
-
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_data >> 7 & 0x1);
-
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_data >> 4 & 0x1);
-
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_data >> 6 & 0x1);
-			gamepad1_buttons.buttons_data = (gamepad1_buttons.buttons_data << 1)
-					| !(usb->gamepad1->gamepad_data >> 5 & 0x1);
+			/* Build the CD32 serial-button word in a local first.  The
+			 * EXTI handler at $DFF016 reads gamepad1_buttons.buttons_data
+			 * directly to feed POTGOR bit 6 when CD32 mode is active, so
+			 * publishing intermediate shift states (1, 3, 7, ...) here
+			 * lets an Amiga read at index N catch a moment where bit N is
+			 * still 0 -- showing the button as pressed even when no real
+			 * input is happening.  Compute once, store once. */
+			uint16_t bd1 = 1; // Gamepad id
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_PLAY]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_RW]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_FF]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_GREEN]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_YELLOW]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_RED]);
+			bd1 = (bd1 << 1) | !gp_btn(gp1w, gamepad1_map.src[GMAP_CD32_BLUE]);
+			gamepad1_buttons.buttons_data = bd1;
 			//__enable_irq();
 
 		}
@@ -448,53 +465,25 @@ int main(void)
 		if (usb->gamepad2 != NULL && usb->mouseDetected != 1) //make sure mouse doesn't colide with controller
 				{
 			//__disable_irq();
-			joy0datH = 0;
-			joy0datL = 0;
+			uint16_t gp2w = gp_combine(usb->gamepad2->gamepad_data,
+					usb->gamepad2->gamepad_extraBtn);
 
-			joy0datHDelta = 0;
-			joy0datLDelta = 0;
-
-			if (usb->gamepad2->gamepad_data >> 1 & 0x1)
-			{
-				joy0datH = 0x03;
-				joy0datHDelta = 0x03;
-			}
-
-			if (usb->gamepad2->gamepad_data >> 3 & 0x1)
-			{
-				joy0datH = 0x01;
-				joy0datHDelta = 0x01;
-
-			}
-			if (usb->gamepad2->gamepad_data >> 1 & 0x1
-					&& usb->gamepad2->gamepad_data >> 3 & 0x1)
-			{
-				joy0datH = 0x02;
-				joy0datHDelta = 0x02;
-
-			}
-
-			if (usb->gamepad2->gamepad_data & 0x1)
-			{
-				joy0datL = 0x03;
-				joy0datLDelta = 0x03;
-			}
-
-
-			if (usb->gamepad2->gamepad_data >> 2 & 0x1)
-			{
-				joy0datL = 0x01;
-				joy0datLDelta = 0x01;
-			}
-			if (usb->gamepad2->gamepad_data & 0x1
-					&& usb->gamepad2->gamepad_data >> 2 & 0x1)
-			{
-				joy0datL = 0x02;
-				joy0datLDelta = 0x02;
-
-			}
+			/* Same single-store publish as gamepad1 -- avoids the neutral-
+			 * flicker race when JOY0DAT is read from the bus IRQ. */
+			uint8_t gd2 = usb->gamepad2->gamepad_data;
+			int8_t n0H = 0, n0L = 0;
+			if (gd2 >> 1 & 0x1)                       n0H = 0x03; /* left */
+			if (gd2 >> 3 & 0x1)                       n0H = 0x01; /* up */
+			if ((gd2 >> 1 & 0x1) && (gd2 >> 3 & 0x1)) n0H = 0x02; /* left+up */
+			if (gd2 & 0x1)                            n0L = 0x03; /* right */
+			if (gd2 >> 2 & 0x1)                       n0L = 0x01; /* down */
+			if ((gd2 & 0x1) && (gd2 >> 2 & 0x1))      n0L = 0x02; /* right+down */
+			joy0datHDelta = n0H;
+			joy0datLDelta = n0L;
+			joy0datH = n0H;
+			joy0datL = n0L;
 			if ((POTGORH >> 1) & 1U) { //check if register is output enable
-				if (usb->gamepad2->gamepad_data >> 5 & 0x1) {
+				if (gp_btn(gp2w, gamepad2_map.src[GMAP_FIRE2])) {
 					POTGORH &= ~(1UL << 0);
 				} else {
 					POTGORH |= 1UL << 0;
@@ -502,39 +491,29 @@ int main(void)
 			}
 
 			if ((POTGORH >> 3) & 1U) { //check if register is output enable
-				if (usb->gamepad2->gamepad_data >> 4 & 0x1) {
+				if (gp_btn(gp2w, gamepad2_map.src[GMAP_FIRE3])) {
 					POTGORH &= ~(1UL << 2);
 				} else {
 					POTGORH |= 1UL << 2;
 				}
 			}
 
-			if (usb->gamepad2->gamepad_data >> 6 & 0x1) {
+			if (gp_btn(gp2w, gamepad2_map.src[GMAP_FIRE1])) {
 				CIAAPRA &= ~(1UL << 6);
 
 			} else {
 				CIAAPRA |= 1UL << 6;
 			}
-			gamepad2_buttons.buttons_data = 1; // Gamepad id
-
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_extraBtn >> 5 & 0x1);
-
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_extraBtn & 0x1);
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_extraBtn >> 1 & 0x1);
-
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_data >> 7 & 0x1);
-
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_data >> 4 & 0x1);
-
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_data >> 6 & 0x1);
-			gamepad2_buttons.buttons_data = (gamepad2_buttons.buttons_data << 1)
-					| !(usb->gamepad2->gamepad_data >> 5 & 0x1);
+			/* Atomic publish, as for gamepad1 above. */
+			uint16_t bd2 = 1; // Gamepad id
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_PLAY]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_RW]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_FF]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_GREEN]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_YELLOW]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_RED]);
+			bd2 = (bd2 << 1) | !gp_btn(gp2w, gamepad2_map.src[GMAP_CD32_BLUE]);
+			gamepad2_buttons.buttons_data = bd2;
 
 			//__enable_irq();
 		}
@@ -862,6 +841,223 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 				WriteData(joy1datL);
 				break;
 
+			default:
+				/* Gamepad map read: 0x20..0x29 = pad1[0..9], 0x2A..0x33 = pad2[0..9] */
+				if (address >= 0x20 && address <= 0x29) {
+					WriteData(gamepad1_map.src[address - 0x20]);
+				} else if (address >= 0x2A && address <= 0x33) {
+					WriteData(gamepad2_map.src[address - 0x2A]);
+				}
+				/* New registers live in $10..$1F.  The riser's external
+				 * address decoder appears not to pulse the STM32 EXTI for the
+				 * $34..$3F range, so anything we put there is unreachable. */
+				/* Live gamepad state for watch/learn:
+				 *   0x10 = pad1 data byte (D-pad + buttons 0..3)
+				 *   0x11 = pad1 extraBtn (buttons 4..11)
+				 *   0x12 = pad2 data
+				 *   0x13 = pad2 extraBtn
+				 * Returns 0 when no pad is connected. */
+				else if (address == 0x10) {
+					WriteData((usb && usb->gamepad1) ? usb->gamepad1->gamepad_data : 0);
+				} else if (address == 0x11) {
+					WriteData((usb && usb->gamepad1) ? usb->gamepad1->gamepad_extraBtn : 0);
+				} else if (address == 0x12) {
+					WriteData((usb && usb->gamepad2) ? usb->gamepad2->gamepad_data : 0);
+				} else if (address == 0x13) {
+					WriteData((usb && usb->gamepad2) ? usb->gamepad2->gamepad_extraBtn : 0);
+				}
+				/* Per-port device type for identifying which physical USB jack
+				 * is wired to pad 1 (HS) vs pad 2 (FS) without needing a gamepad
+				 * connected. 0=none, 1=keyboard, 2=mouse, 3=gamepad. */
+				else if (address == 0x14) {
+					WriteData(usb ? usb->hs_device_type : 0);
+				} else if (address == 0x15) {
+					WriteData(usb ? usb->fs_device_type : 0);
+				}
+				/* Sentinel: always returns 0xA5. */
+				else if (address == 0x16) {
+					WriteData(0xA5);
+				}
+				/* Live USB-host diagnostic snapshot:
+				 * $1C = HS host gState | (is_connected << 7)
+				 * $1D = FS host gState | (is_connected << 7)
+				 * gState values: 0=IDLE 1=WAIT_ATTACH 2=ATTACHED 3=DISCONN
+				 * 4=DETECT_SPEED 5=ENUMERATION 6=CLASS_REQ 7=INPUT
+				 * 8=SET_CONFIG 9=SET_WAKEUP 10=CHECK_CLASS 11=CLASS 12=SUSPEND
+				 * 13=ABORT */
+				/* Note: moved off $1C/$1D because that range overlaps the
+				 * raw HID report window $18..$1F and the specific-address
+				 * handlers shadow the range handler -- raw_report bytes at
+				 * window offsets 4 and 5 were being silently overwritten
+				 * with this gState info in the Amiga-side view. */
+				else if (address == 0x34) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					WriteData((uint8_t)(hUsbHostHS.gState & 0x7F)
+						| ((hUsbHostHS.device.is_connected & 1) << 7));
+				} else if (address == 0x35) {
+					extern USBH_HandleTypeDef hUsbHostFS;
+					WriteData((uint8_t)(hUsbHostFS.gState & 0x7F)
+						| ((hUsbHostFS.device.is_connected & 1) << 7));
+				}
+				/* HID class request sub-state (ctl_state) for diagnosing
+				 * stuck HOST_CLASS_REQUEST states.  Reads interface 0's
+				 * HID_Handle->ctl_state.  Values:
+				 *   0=INIT  1=IDLE  2=GET_REPORT_DESC  3=GET_HID_DESC
+				 *   4=SET_IDLE  5=SET_PROTOCOL  6=SET_REPORT */
+				else if (address == 0x36) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					uint8_t v = 0xFF;
+					if (hUsbHostHS.pActiveClass && hUsbHostHS.pActiveClass->pData[0]) {
+						HID_HandleTypeDef *h =
+							(HID_HandleTypeDef *)hUsbHostHS.pActiveClass->pData[0];
+						v = (uint8_t)h->ctl_state;
+					}
+					WriteData(v);
+				} else if (address == 0x37) {
+					extern USBH_HandleTypeDef hUsbHostFS;
+					uint8_t v = 0xFF;
+					if (hUsbHostFS.pActiveClass && hUsbHostFS.pActiveClass->pData[0]) {
+						HID_HandleTypeDef *h =
+							(HID_HandleTypeDef *)hUsbHostFS.pActiveClass->pData[0];
+						v = (uint8_t)h->ctl_state;
+					}
+					WriteData(v);
+				}
+				/* Live mouse_info diagnostics: lets the user see whether
+				 * the USB host is actually decoding mouse reports at all.
+				 * If holding the trackpad steady shows non-changing values
+				 * but moving it doesn't change them either, the dongle
+				 * isn't forwarding mouse data to the boot interface. */
+				else if (address == 0x38) {
+					WriteData(usb && usb->mouse ? (uint8_t)usb->mouse->x : 0);
+				} else if (address == 0x39) {
+					WriteData(usb && usb->mouse ? (uint8_t)usb->mouse->y : 0);
+				} else if (address == 0x3A) {
+					if (usb && usb->mouse) {
+						uint8_t v = 0;
+						if (usb->mouse->buttons[0]) v |= 0x01;
+						if (usb->mouse->buttons[1]) v |= 0x02;
+						if (usb->mouse->buttons[2]) v |= 0x04;
+						v |= (usb->mouse != NULL) << 7;   /* mouse pointer non-NULL */
+						WriteData(v);
+					} else {
+						WriteData(0);
+					}
+				}
+				/* Active pad VID:PID per Amiga port -- lets risergamepad
+				 * confirm which physical pad is bound to each profile slot.
+				 * Tight squeeze: the Riser's external address decoder only
+				 * routes 6 bits, the obvious neighbour range $0A..$0F is
+				 * already in use (joy0dat / joy1dat reads), and we have to
+				 * thread the 8 desired bytes through the few unallocated
+				 * cells in $00..$3F.  Pad 1 gets full VID:PID; Pad 2 only
+				 * exposes VID (its PID is still used internally for profile
+				 * keying, just not visible to the Amiga tool).
+				 *   $08 = Pad-1 VID lo     $09 = Pad-1 VID hi
+				 *   $3B = Pad-1 PID lo     $3C = Pad-1 PID hi
+				 *   $3D = Pad-2 VID lo     $3E = Pad-2 VID hi
+				 * 0/0 means "no pad on this port". */
+				else if (address == 0x08) {
+					WriteData((uint8_t)gamepad1_vid);
+				} else if (address == 0x09) {
+					WriteData((uint8_t)(gamepad1_vid >> 8));
+				} else if (address == 0x3B) {
+					WriteData((uint8_t)gamepad1_pid);
+				} else if (address == 0x3C) {
+					WriteData((uint8_t)(gamepad1_pid >> 8));
+				} else if (address == 0x3D) {
+					WriteData((uint8_t)gamepad2_vid);
+				} else if (address == 0x3E) {
+					WriteData((uint8_t)(gamepad2_vid >> 8));
+				}
+				/* EnumState (current USB enumeration sub-step) for diagnosing
+				 * where enumeration hangs.
+				 * 0=IDLE 1=GET_FULL_DEV_DESC 2=SET_ADDR 3=GET_CFG_DESC
+				 * 4=GET_FULL_CFG_DESC 5=GET_MFC_STR 6=GET_PROD_STR 7=GET_SN_STR */
+				else if (address == 0x05) {
+					extern USBH_HandleTypeDef hUsbHostFS;
+					WriteData((uint8_t)hUsbHostFS.EnumState);
+				} else if (address == 0x07) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					WriteData((uint8_t)hUsbHostHS.EnumState);
+				}
+				/* Class-init sub-state for diagnosing HOST_CHECK_CLASS hangs.
+				 * Reads pActiveClass->iface_init.  Values for the HID class:
+				 *   0=INIT  1=PREP  2=READHID  3=READHIDRPTDESC
+				 *   4=INITSUBCLASS  5=INITENDPNT  6=SELECTIFACE */
+				else if (address == 0x00) {
+					extern USBH_HandleTypeDef hUsbHostFS;
+					uint8_t v = 0xFF;
+					if (hUsbHostFS.pActiveClass) v = (uint8_t)hUsbHostFS.pActiveClass->iface_init;
+					WriteData(v);
+				} else if (address == 0x02) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					uint8_t v = 0xFF;
+					if (hUsbHostHS.pActiveClass) v = (uint8_t)hUsbHostHS.pActiveClass->iface_init;
+					WriteData(v);
+				} else if (address == 0x03) {
+					/* pActiveClass->iface_initnum for FS -- shows which
+					 * interface is currently being processed. */
+					extern USBH_HandleTypeDef hUsbHostFS;
+					uint8_t v = 0xFF;
+					if (hUsbHostFS.pActiveClass) v = (uint8_t)hUsbHostFS.pActiveClass->iface_initnum;
+					WriteData(v);
+				} else if (address == 0x04) {
+					extern USBH_HandleTypeDef hUsbHostHS;
+					uint8_t v = 0xFF;
+					if (hUsbHostHS.pActiveClass) v = (uint8_t)hUsbHostHS.pActiveClass->iface_initnum;
+					WriteData(v);
+				}
+				/* Raw HID report window: $18..$1F = raw_report[offset+0..7].
+				 * `offset` is set by writing $17 (must be a multiple of 8 in
+				 * range 0..24).  Reading $17 returns the actual HID report
+				 * length so the Amiga side knows how many bytes are meaningful. */
+				else if (address == 0x17) {
+					if (usb && (usb->gamepad1 || usb->gamepad2)) {
+						HID_gamepad_Info_TypeDef *gp =
+							usb->gamepad1 ? usb->gamepad1 : usb->gamepad2;
+						WriteData(gp->raw_report_len);
+					} else {
+						WriteData(0);
+					}
+				} else if (address >= 0x18 && address <= 0x1F) {
+					if (fault_report_mode == 1) {
+						uint32_t _fp = g_fault_pc, _fc = g_fault_cfsr;
+						uint8_t _fb[8];
+						_fb[0]=(uint8_t)_fp;        _fb[1]=(uint8_t)(_fp>>8);
+						_fb[2]=(uint8_t)(_fp>>16);  _fb[3]=(uint8_t)(_fp>>24);
+						_fb[4]=(uint8_t)_fc;        _fb[5]=(uint8_t)(_fc>>8);
+						_fb[6]=(uint8_t)(_fc>>16);  _fb[7]=(uint8_t)(_fc>>24);
+						WriteData(_fb[address - 0x18]);
+					} else if (fault_report_mode == 2) {
+						uint8_t _kb[8];
+						_kb[0]=(uint8_t)g_kbreset_count; _kb[1]=g_kbreset_data[0];
+						_kb[2]=g_kbreset_data[1];       _kb[3]=g_kbreset_data[2];
+						_kb[4]=g_kbreset_data[3];       _kb[5]=(uint8_t)g_fault_count;
+						_kb[6]=(uint8_t)g_boot_count;   _kb[7]=g_reset_flags;
+						WriteData(_kb[address - 0x18]);
+					} else if (fault_report_mode == 3) {
+						uint32_t _l = g_fault_lr, _s = g_fault_sp;
+						uint8_t _ls[8];
+						_ls[0]=(uint8_t)_l;        _ls[1]=(uint8_t)(_l>>8);
+						_ls[2]=(uint8_t)(_l>>16);  _ls[3]=(uint8_t)(_l>>24);
+						_ls[4]=(uint8_t)_s;        _ls[5]=(uint8_t)(_s>>8);
+						_ls[6]=(uint8_t)(_s>>16);  _ls[7]=(uint8_t)(_s>>24);
+						WriteData(_ls[address - 0x18]);
+					} else if (usb && (usb->gamepad1 || usb->gamepad2)) {
+						HID_gamepad_Info_TypeDef *gp =
+							usb->gamepad1 ? usb->gamepad1 : usb->gamepad2;
+						uint8_t idx = raw_report_offset + (address - 0x18);
+						if (idx < sizeof(gp->raw_report)) {
+							WriteData(gp->raw_report[idx]);
+						} else {
+							WriteData(0);
+						}
+					} else {
+						WriteData(0);
+					}
+				}
+				break;
 			}
 	} else {
 		if (address == 0x01) { //CIAADRA BFE201
@@ -900,6 +1096,54 @@ void EXTI0_IRQHandler(void) //INTSIG8 //GPIO_PIN0
 			if (sensVal > 0) {
 				sensitivityMouse = sensVal;
 				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, sensitivityMouse);
+			}
+		}
+
+		/* Raw-report window selector: pick which 8-byte slice of the
+		 * gamepad's 32-byte raw_report is exposed at $18..$1F. Only multiples
+		 * of 8 in [0,24] are accepted; anything else clamps to 0. */
+		if (address == 0x17) {
+			uint8_t off = ReadData();
+			if (off == 0x80) {
+				fault_report_mode = 1;
+			} else if (off == 0x81) {
+				fault_report_mode = 2;
+			} else if (off == 0x82) {
+				fault_report_mode = 3;
+			} else if (off == 0x83) {
+				/* clear all fault diagnostics for a clean baseline */
+				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR18, 0);
+				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR23, 0);
+				HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR25, 0);
+				g_fault_pc = 0; g_fault_cfsr = 0; g_fault_lr = 0;
+				g_fault_sp = 0; g_fault_count = 0; g_kbreset_count = 0;
+				g_boot_count = 0;
+				fault_report_mode = 0;
+			} else if (off == 0x84) {
+				fault_test_pending = 1;
+			} else if (off == 0 || off == 8 || off == 16 || off == 24) {
+				fault_report_mode = 0;
+				raw_report_offset = off;
+			} else {
+				fault_report_mode = 0;
+				raw_report_offset = 0;
+			}
+		}
+
+		/* Gamepad map write: 0x20..0x29 = pad1[0..9], 0x2A..0x33 = pad2[0..9].
+		 * Value is a source-bit index 0..15, or 0xFF for "unmapped".
+		 * Side-effect: persists the affected port's profile (keyed by the
+		 * currently-active pad's VID:PID) to RTC backup. */
+		if (address >= 0x20 && address <= 0x33) {
+			uint8_t val = ReadData();
+			if (val < 16 || val == GAMEPAD_MAP_UNMAPPED) {
+				if (address <= 0x29) {
+					gamepad1_map.src[address - 0x20] = val;
+					gamepad_map_save_active(1);
+				} else {
+					gamepad2_map.src[address - 0x2A] = val;
+					gamepad_map_save_active(2);
+				}
 			}
 		}
 	}

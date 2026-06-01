@@ -673,9 +673,17 @@ USBH_StatusTypeDef  USBH_Process(USBH_HandleTypeDef *phost)
       {
         phost->pActiveClass = NULL;
 
+        /* VID:PID quirks for legacy/cheap gamepad adapters that don't
+         * advertise themselves as InterfaceClass=HID.  Force HID
+         * (ClassCode 0x03) so our HID host code claims the device. */
+        uint16_t qvid = phost->device.DevDesc.idVendor;
+        uint16_t qpid = phost->device.DevDesc.idProduct;
+        int quirk_force_hid = (qvid == 0x6666 && qpid == 0x0667);
+
         for (idx = 0U; idx < USBH_MAX_NUM_SUPPORTED_CLASS; idx++)
         {
-          if (phost->pClass[idx]->ClassCode == phost->device.CfgDesc.Itf_Desc[0].bInterfaceClass)
+          if (phost->pClass[idx]->ClassCode == phost->device.CfgDesc.Itf_Desc[0].bInterfaceClass
+              || (quirk_force_hid && phost->pClass[idx]->ClassCode == 0x03U))
           {
             phost->pActiveClass = phost->pClass[idx];
             break;
@@ -979,7 +987,13 @@ static USBH_StatusTypeDef USBH_HandleEnum(USBH_HandleTypeDef *phost)
       ReqStatus = USBH_Get_CfgDesc(phost, phost->device.CfgDesc.wTotalLength);
       if (ReqStatus == USBH_OK)
       {
-        phost->EnumState = ENUM_GET_MFC_STRING_DESC;
+        /* Skip string descriptor reads entirely.  Strings are purely
+         * informational (no consumer in this firmware), and cheap USB 1.1
+         * devices like the WiseGroup SmartJoy PSX adapter NAK every
+         * GET_DESCRIPTOR(STRING) request, exhausting USBH_MAX_ERROR_COUNT
+         * and pushing the host state machine back to HOST_IDLE -- which
+         * restarts the entire enumeration cycle and hangs the port. */
+        Status = USBH_OK;
       }
       else if (ReqStatus == USBH_NOT_SUPPORTED)
       {
@@ -1019,33 +1033,15 @@ static USBH_StatusTypeDef USBH_HandleEnum(USBH_HandleTypeDef *phost)
           /* User callback for Manufacturing string */
           USBH_UsrLog("Manufacturer : %s", (char *)(void *)phost->device.Data);
           phost->EnumState = ENUM_GET_PRODUCT_STRING_DESC;
-
-#if (USBH_USE_OS == 1U)
-          phost->os_msg = (uint32_t)USBH_STATE_CHANGED_EVENT;
-#if (osCMSIS < 0x20000U)
-          (void)osMessagePut(phost->os_event, phost->os_msg, 0U);
-#else
-          (void)osMessageQueuePut(phost->os_event, &phost->os_msg, 0U, NULL);
-#endif
-#endif
         }
-        else if (ReqStatus == USBH_NOT_SUPPORTED)
+        else if (ReqStatus != USBH_BUSY)
         {
+          /* USBH_NOT_SUPPORTED or USBH_FAIL.  Some cheap devices (USB 1.1
+           * gamepad adapters etc.) claim string descriptors exist but won't
+           * actually serve them, hanging enumeration forever.  Skip and
+           * continue rather than retrying. */
           USBH_UsrLog("Manufacturer : N/A");
           phost->EnumState = ENUM_GET_PRODUCT_STRING_DESC;
-
-#if (USBH_USE_OS == 1U)
-          phost->os_msg = (uint32_t)USBH_STATE_CHANGED_EVENT;
-#if (osCMSIS < 0x20000U)
-          (void)osMessagePut(phost->os_event, phost->os_msg, 0U);
-#else
-          (void)osMessageQueuePut(phost->os_event, &phost->os_msg, 0U, NULL);
-#endif
-#endif
-        }
-        else
-        {
-          /* .. */
         }
       }
       else
@@ -1076,23 +1072,11 @@ static USBH_StatusTypeDef USBH_HandleEnum(USBH_HandleTypeDef *phost)
           USBH_UsrLog("Product : %s", (char *)(void *)phost->device.Data);
           phost->EnumState = ENUM_GET_SERIALNUM_STRING_DESC;
         }
-        else if (ReqStatus == USBH_NOT_SUPPORTED)
+        else if (ReqStatus != USBH_BUSY)
         {
+          /* See MFC_STRING note above -- treat any non-busy failure as N/A. */
           USBH_UsrLog("Product : N/A");
           phost->EnumState = ENUM_GET_SERIALNUM_STRING_DESC;
-
-#if (USBH_USE_OS == 1U)
-          phost->os_msg = (uint32_t)USBH_STATE_CHANGED_EVENT;
-#if (osCMSIS < 0x20000U)
-          (void)osMessagePut(phost->os_event, phost->os_msg, 0U);
-#else
-          (void)osMessageQueuePut(phost->os_event, &phost->os_msg, 0U, NULL);
-#endif
-#endif
-        }
-        else
-        {
-          /* .. */
         }
       }
       else
@@ -1123,14 +1107,11 @@ static USBH_StatusTypeDef USBH_HandleEnum(USBH_HandleTypeDef *phost)
           USBH_UsrLog("Serial Number : %s", (char *)(void *)phost->device.Data);
           Status = USBH_OK;
         }
-        else if (ReqStatus == USBH_NOT_SUPPORTED)
+        else if (ReqStatus != USBH_BUSY)
         {
+          /* See MFC_STRING note above -- treat any non-busy failure as N/A. */
           USBH_UsrLog("Serial Number : N/A");
           Status = USBH_OK;
-        }
-        else
-        {
-          /* .. */
         }
       }
       else

@@ -54,6 +54,14 @@
  {
    uint8_t gamepad_data;
    uint8_t gamepad_extraBtn;
+   /* First 32 bytes of the most recent raw HID report, copied verbatim before
+    * the descriptor-aware parser runs.  Lets the Amiga side see exactly which
+    * bits change for each physical button, even when the parser fails to
+    * decode the gamepad's descriptor.  Many gamepads put axes in the early
+    * bytes and buttons further in (byte 10+ on Xbox-style pads), so the
+    * window has to be larger than 8 bytes. */
+   uint8_t raw_report[32];
+   uint8_t raw_report_len;   /* actual HID report length in bytes (clamped) */
  }
  HID_gamepad_Info_TypeDef;
 /**

@@ -33,6 +33,14 @@
 #include "usbh_hid_mouse.h"
 
 /* USER CODE BEGIN INCLUDE */
+ /* Per-port device classification, exposed via DIRECT ACCESS so the Amiga-side
+  * config tool can identify which physical port maps to pad 1 (HS) vs pad 2 (FS)
+  * even when neither holds a gamepad. */
+ #define USB_DEV_NONE     0
+ #define USB_DEV_KEYBOARD 1
+ #define USB_DEV_MOUSE    2
+ #define USB_DEV_GAMEPAD  3
+
  typedef struct _HID_USBDev
  {
    HID_gamepad_Info_TypeDef *gamepad1;
@@ -42,6 +50,8 @@
    HID_MOUSE_Info_TypeDef *mouse;
    uint8_t mouseDetected;
    uint8_t overridePorts;
+   uint8_t hs_device_type;   /* USB_DEV_* — port wired to pad 1 slot */
+   uint8_t fs_device_type;   /* USB_DEV_* — port wired to pad 2 slot */
 
  }
  HID_USBDevicesTypeDef;

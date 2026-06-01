@@ -53,6 +53,36 @@
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/* HardFault capture: stash the faulting PC/CFSR/LR in backup registers,
+ * release the Amiga keyboard lines (so a frozen riser can't hold KBCLK
+ * low and make the Amiga hard-reset), then warm-reset to auto-recover.
+ * A counter (BKP22R, cleared after stable uptime in main) stops a tight
+ * fault-reset loop from bricking the riser. */
+void HardFault_Capture(uint32_t *sp)
+{
+  uint32_t pc   = sp[6];
+  uint32_t lr   = sp[5];
+  uint32_t cfsr = *(volatile uint32_t *)0xE000ED28U;
+
+  GPIOB->BSRR = KBD_CLOCK_Pin;   /* PB11 high: release KBCLK */
+  GPIOA->BSRR = KBD_DATA_Pin;    /* PA1  high: release KBDATA */
+
+  PWR->CR1 |= PWR_CR1_DBP;       /* allow backup-domain writes */
+  if (RTC->BKP22R >= 5U) {
+    while (1) { }                /* too many resets: hang (KBCLK released) */
+  }
+  RTC->BKP22R = RTC->BKP22R + 1U;
+  RTC->BKP19R = pc;
+  RTC->BKP20R = cfsr;
+  RTC->BKP21R = lr;
+  RTC->BKP24R = (uint32_t)sp;          /* stack pointer at fault */
+  RTC->BKP23R = RTC->BKP23R + 1U;       /* monotonic fault count */
+  RTC->BKP18R = 0xFA017FA0U;     /* magic: fault captured */
+
+  NVIC_SystemReset();
+  while (1) { }
+}
+
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -82,16 +112,15 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
-void HardFault_Handler(void)
+__attribute__((naked)) void HardFault_Handler(void)
 {
-  /* USER CODE BEGIN HardFault_IRQn 0 */
-
-  /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
+  __asm volatile (
+    "tst lr, #4          \n"
+    "ite eq              \n"
+    "mrseq r0, msp       \n"
+    "mrsne r0, psp       \n"
+    "b HardFault_Capture \n"
+  );
 }
 
 /**
